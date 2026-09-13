@@ -324,6 +324,8 @@ class Dashboard:
                 if not isinstance(target, list) or len(target) != 2:
                     raise ValueError("Expected target X and Y")
                 data["target"] = [number(target[i], 0, PITCH[i], "target") for i in range(2)]
+                if data.get("target_yaw") is not None:
+                    data["target_yaw"] = number(data["target_yaw"], -180, 360, "target yaw")
                 data["addresses"] = addresses(data.get("addresses"))
                 if len(data["addresses"]) not in (4, 5):
                     raise ValueError("Driving requires four wheels and an optional dribbler")

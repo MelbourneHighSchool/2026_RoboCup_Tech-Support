@@ -152,6 +152,28 @@ def test_rpm_limit_and_arrival():
     assert target_command([0, 0, 0], [2000, 0], 0)[1] == 0
 
 
+@pytest.mark.parametrize("yaw,target_yaw,arrived", [(0, 90, False), (88, 90, True), (-179, 179, True)])
+def test_target_waits_for_yaw_at_destination(yaw, target_yaw, arrived):
+    _, speed, rotation, _, done = target_command([100, 100, yaw], [102, 102], 500, target_yaw)
+    assert speed == 0
+    assert rotation == target_yaw
+    assert done is arrived
+
+
+def test_target_rotates_while_translating():
+    _, speed, rotation, _, arrived = target_command([0, 0, 0], [1000, 0], 500, 90)
+    assert speed == 500 and rotation == 90 and not arrived
+
+
+@pytest.mark.parametrize("value", [-181, 361, float("nan"), float("inf"), True, "bad"])
+def test_drive_rejects_invalid_target_yaw(value, dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    dashboard.command("arm", {}, token)
+    with pytest.raises((ValueError, TypeError)):
+        dashboard.command("drive", {"speed": 500, "target": [100, 100], "target_yaw": value,
+                                    "addresses": [28, 32, 31, 30]}, token)
+
+
 def test_masks_pixel_picker_and_lossless_frozen_frame(dashboard):
     hsv = np.array([[[110, 250, 200], [25, 200, 200], [0, 0, 0]]], dtype=np.uint8)
     detector = OpenCV(DEFAULT_THRESHOLDS)

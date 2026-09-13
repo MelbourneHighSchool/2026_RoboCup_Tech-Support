@@ -46,7 +46,7 @@ $('localise').onclick = async () => {
   catch (e) { message(e.message); }
 };
 handle('calibrate', 'calibrate', () => ({addresses:motorAddresses(), wheels_clear:$('wheelsClear').checked}));
-handle('drive', 'drive', () => ({addresses:motorAddresses(), speed:$('speed').value, target:[$('targetX').value,$('targetY').value]}));
+handle('drive', 'drive', () => ({addresses:motorAddresses(), speed:$('speed').value, target_yaw:$('targetYaw').value, target:[$('targetX').value,$('targetY').value]}));
 $('modelSize').onchange = async () => {
   try { await api('select_model', {model:$('modelSize').value}); }
   catch (e) { message(e.message); }

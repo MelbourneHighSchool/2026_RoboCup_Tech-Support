@@ -11,17 +11,20 @@ from collections import deque
 PITCH = (2430, 1820)
 
 
-def target_command(pose, target, speed):
+def target_command(pose, target, speed, target_yaw=None):
     """Return direction/speed/yaw and the RPM-limited speed for dashboard display."""
     x, y, yaw = pose[:3]
     dx, dy = target[0] - x, target[1] - y
     distance = math.hypot(dx, dy)
     direction = math.degrees(math.atan2(dy, dx))
-    requested = min(speed, distance / 300.0 * speed)
+    requested = 0 if distance <= 10 else min(speed, distance / 300.0 * speed)
     angle = math.radians(yaw - direction + 45)
     peak = max(abs(math.sin(angle)), abs(math.cos(angle)))
     limit = 400 * 50 * math.pi / 60 / peak
-    return direction, requested, yaw, min(requested, limit), distance <= 10
+    rotation = yaw if target_yaw is None else target_yaw
+    yaw_error = (rotation - yaw + 180) % 360 - 180
+    arrived = distance <= 10 and abs(yaw_error) <= 5
+    return direction, requested, rotation, min(requested, limit), arrived
 
 
 class Hardware:
@@ -39,6 +42,7 @@ class Hardware:
         self.active_cancel = threading.Event()
         self.localisation_stop_requested = threading.Event()
         self.target = None
+        self.target_yaw = None
         self.speed = 500
         self.manual = None
         self.motion_cancel = threading.Event()
@@ -201,6 +205,7 @@ class Hardware:
                 return
             self.controller = controller
             self.target = data["target"]
+            self.target_yaw = data.get("target_yaw")
             self.speed = data["speed"]
             self.motion_cancel = cancel
             self.status["mode"] = "driving"
@@ -348,7 +353,9 @@ class Hardware:
                                 target = self.target
                             if target is not None:
                                 direction, speed, yaw, limited, arrived = target_command(
-                                    state["pose"], target, self.speed,
+                                    # Use the same native heading as the motor yaw loop.
+                                    (*state["pose"][:2], controller.get_yaw()),
+                                    target, self.speed, self.target_yaw,
                                 )
                                 with self.lock:
                                     self.status["drive"] = {
