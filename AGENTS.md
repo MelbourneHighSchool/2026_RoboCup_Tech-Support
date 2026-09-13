@@ -250,6 +250,10 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 
 ## LIDAR acquisition timestamps and slip uncertainty
 
+**Problem:** Dashboard rotation stopped around 90 degrees because `LocalisationSession` required an MCL correction every 0.5 s, while the native rotation gate deliberately suspends corrections above 50 deg/s. Fresh raw scans and IMU reports did not prevent the stale-pose abort.
+
+**Solution:** A gate closure from a recent valid MCL fix permits prediction for at most 3 s since the last correction, with continuing raw scans, IMU reports, and available finite yaw/gyro readings. On gate reopening, correction must resume within 0.5 s, still within the 3 s overall limit. Gate toggles cannot renew either deadline; an actual correction resets the allowance. The state includes `rotation_prediction` and retains the true `mcl_age_s`. The dashboard's worker watchdog and invalid-pose/pause checks remain active. Regression checks: `.venv/bin/python -m pytest tests/dashboard_test.py -q`.
+
 **Problem:** Timing the nonblocking `grabScanDataHq()` call measures retrieval of an already completed revolution, not acquisition. The SDK timestamp's clock and reference point must be checked before using it with odometry history.
 
 **Solution:** `grabScanDataHqWithTimeStamp()` returns the first sample's timestamp. The bundled Linux SDK uses `CLOCK_MONOTONIC` microseconds (`sdk/src/arch/linux/timer.cpp`), matching Linux steady-clock odometry. Retain `LidarScanMode` from `startScan()` and add `(count - 1) * us_per_sample / 2` before converting to seconds. Use the original count including misses, before sorting/filtering. This is a whole-scan midpoint approximation, not per-beam deskewing. Invalid timestamps are excluded from localisation; scans older than retained odometry cannot be fully rewound and are rejected.

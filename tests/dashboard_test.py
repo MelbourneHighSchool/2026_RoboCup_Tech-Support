@@ -460,6 +460,71 @@ def test_localisation_predicts_without_fix_and_flags_stale_data():
     assert not session.tick()["fresh"]
 
 
+@pytest.fixture
+def rotation_session():
+    lidar, imu = FakeLidar(), FakeIMU()
+    lidar.mcl_updates = 1
+    lidar.scans_enabled = True
+    lidar.get_mcl_update_count = lambda: lidar.mcl_updates
+    lidar.scan_updates_enabled = lambda: lidar.scans_enabled
+    now = [time.monotonic()]
+    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), clock=lambda: now[0])
+
+    def tick(dt=0, *, scan=True, imu_report=True):
+        now[0] += dt
+        if scan:
+            lidar.generation += 1
+        if imu_report:
+            imu.imu_update_count += 1
+        return session.tick()
+
+    assert tick()["fresh"]
+    return lidar, imu, tick
+
+
+def test_rotation_allows_prediction_and_resumes_correction(rotation_session):
+    lidar, _imu, tick = rotation_session
+    lidar.scans_enabled = False
+    assert tick(.1)["fresh"]
+    state = tick(1)
+    assert state["fresh"] and state["rotation_prediction"]
+    assert state["mcl_age_s"] > .5
+    lidar.scans_enabled = True
+    assert tick(.1)["fresh"]
+    assert tick(.4)["fresh"]
+    lidar.mcl_updates += 1
+    state = tick(.1)
+    assert state["fresh"] and not state["rotation_prediction"]
+    assert not tick(.6)["fresh"]  # Normal correction timeout is restored.
+
+
+@pytest.mark.parametrize("failure", ["scan", "imu", "gyro", "yaw", "budget", "resume"])
+def test_rotation_preserves_timeouts(rotation_session, failure):
+    lidar, imu, tick = rotation_session
+    lidar.scans_enabled = False
+    assert tick(.1)["fresh"]
+    assert tick(.7)["fresh"]
+    if failure == "gyro":
+        imu.get_gyro_z_deg_s = lambda: None
+    if failure == "yaw":
+        imu.get_yaw = lambda: None
+    if failure == "resume":
+        lidar.scans_enabled = True
+        assert tick(.1)["fresh"]
+        # Re-closing the gate must not extend the resumption deadline.
+        lidar.scans_enabled = False
+    state = tick(3 if failure == "budget" else .6,
+                 scan=failure != "scan", imu_report=failure != "imu")
+    assert not state["fresh"]
+
+
+def test_gate_cannot_rescue_already_stale_localisation(rotation_session):
+    lidar, _imu, tick = rotation_session
+    assert not tick(.6)["fresh"]
+    lidar.scans_enabled = False
+    assert not tick(.1)["fresh"]
+
+
 def test_stop_localisation_releases_session_and_clears_diagnostics(tmp_path):
     notifications = []
     hardware = Hardware(tmp_path, lambda text, **_kwargs: notifications.append(text))
