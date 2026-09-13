@@ -32,7 +32,7 @@ PITCH_WIDTH = 1820
 # How close to the white sideline before switching from wall-drive to upfield.
 BALL_HIDING_LINE_THRESHOLD = 150
 # Set to False to disable the ball-hiding strategy.
-BALL_HIDING_ENABLED = False
+BALL_HIDING_ENABLED = True
 # Distance to goal (mm) at which ball hiding starts / ends.
 BALL_HIDING_START_DIST = 1000
 BALL_HIDING_END_DIST = 600
@@ -250,6 +250,7 @@ def striker(
     steering_state=False,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
+    lined_up=False,
 ):
     """Striker strategy: approach ball, hide along sideline when far, then aim and kick."""
     if friendly_bot_positions is None:

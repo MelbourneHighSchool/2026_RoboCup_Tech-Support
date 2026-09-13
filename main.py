@@ -483,6 +483,7 @@ try:
                 ball_direction,
                 ball_distance,
                 bot_measurements,
+                lined_up,
             ) = camera.get_scene_measurement()
             has_new_camera_frame = camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
@@ -582,6 +583,7 @@ try:
                     steering_state=steering_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
+                    lined_up=lined_up,
                 )
             elif bot_mode == BotMode.STRIKER:
                 direction, speed, rotation, steering_state, kick, dribbler = striker.striker(
@@ -594,6 +596,7 @@ try:
                     steering_state=steering_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
+                    lined_up=lined_up,
                 )
             elif bot_mode == BotMode.GOALIE:
                 direction, speed, rotation, kick, dribbler = defence.goalie(
@@ -605,6 +608,7 @@ try:
                     ball_captured,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
+                    lined_up=lined_up,
                 )
                 steering_state = False
             if (

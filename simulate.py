@@ -755,6 +755,49 @@ def ball_visible_from(observer, ball_x, ball_y, bots):
     return True
 
 
+def goal_lined_up(observer, bots):
+    """Whether the forward ray reaches enemy goal colour before solid geometry."""
+    if observer.base_color == yellow:
+        goal_min_x, goal_max_x = GOAL_LEFT_BACK_X, GOAL_LEFT_FRONT_X
+    else:
+        goal_min_x, goal_max_x = GOAL_RIGHT_FRONT_X, GOAL_RIGHT_BACK_X
+    angle = math.radians(observer.yaw)
+    dx, dy = math.cos(angle), math.sin(angle)
+    # Intersect the ray with the coloured goal rectangle using axis slabs.
+    near, far = 0.0, math.inf
+    for origin, direction, lower, upper in (
+        (observer.x, dx, goal_min_x, goal_max_x),
+        (observer.y, dy, GOAL_TOP_Y, GOAL_BOTTOM_Y),
+    ):
+        if abs(direction) <= EPSILON:
+            if not lower <= origin <= upper:
+                return False
+            continue
+        entry, exit_distance = sorted(((lower - origin) / direction, (upper - origin) / direction))
+        near, far = max(near, entry), min(far, exit_distance)
+        if near > far:
+            return False
+    start = (observer.x, observer.y)
+    end = (observer.x + near * dx, observer.y + near * dy)
+    # Goal side/back walls are solid even where they overlap the goal colour.
+    walls = list(GOAL_LINES) + [
+        ((0, 0), (PITCH_WIDTH, 0), 0),
+        ((PITCH_WIDTH, 0), (PITCH_WIDTH, PITCH_HEIGHT), 0),
+        ((PITCH_WIDTH, PITCH_HEIGHT), (0, PITCH_HEIGHT), 0),
+        ((0, PITCH_HEIGHT), (0, 0), 0),
+    ]
+    for wall_start, wall_end, width in walls:
+        if segment_segment_distance(start, end, wall_start, wall_end) <= width / 2 + EPSILON:
+            return False
+    for other in bots:
+        if other is observer:
+            continue
+        distance, _ = point_to_line_segment_distance(other.x, other.y, *start, *end)
+        if distance <= BOT_RADIUS + EPSILON:
+            return False
+    return True
+
+
 def check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
     for line in goal_lines:
         (x1, y1), (x2, y2), line_width = line
@@ -1517,7 +1560,12 @@ class LogPlaybackControls:
     def _on_slider(self, value: str) -> None:
         if self._updating_slider:
             return
-        self.seek(int(float(value)), update_slider=False)
+        index = int(float(value))
+        # Tk can deliver Scale.set() callbacks on the next event pump, after
+        # _updating_slider is cleared. Do not reset the playback clock for
+        # our own position updates: that discards elapsed time every frame.
+        if index != self.frame_index:
+            self.seek(index, update_slider=False)
 
     def _refresh_play_button(self) -> None:
         self.play_button.config(text="Pause" if self.playing else "Play")
@@ -1851,6 +1899,7 @@ else:
                     manual_keys = pygame.key.get_pressed()
                 direction, speed, rotation, kick_state = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
+                lined_up = goal_lined_up(bot, bots)
                 controller_x = bot.x
                 controller_y = bot.y
                 controller_yaw = bot.yaw
@@ -1902,6 +1951,7 @@ else:
                         bot.steering,
                         friendly_bot_positions=controller_friendly_bot_positions,
                         enemy_bot_positions=controller_enemy_bot_positions,
+                        lined_up=lined_up,
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)
@@ -1917,6 +1967,7 @@ else:
                         ball_captured,
                         friendly_bot_positions=controller_friendly_bot_positions,
                         enemy_bot_positions=controller_enemy_bot_positions,
+                        lined_up=lined_up,
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)

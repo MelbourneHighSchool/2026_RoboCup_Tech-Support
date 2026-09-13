@@ -108,6 +108,7 @@ def defence(
     steering_state=False,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
+    lined_up=False,
 ):
     dribbler = 0 # Whether the dribbler should be on.
     if friendly_bot_positions is None:
@@ -212,6 +213,7 @@ def goalie(
     ball_captured=False,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
+    lined_up=False,
 ):
     dribbler = 0 # Whether the dribbler should be on.
     if friendly_bot_positions is None:

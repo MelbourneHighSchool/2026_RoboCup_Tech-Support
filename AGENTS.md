@@ -195,6 +195,10 @@ Continue to use the apt-provided NumPy, OpenCV, and Picamera2 packages rather th
 
 ## Other bots in recorded replays
 
+**Problem:** Folder playback already follows video presentation timestamps, but Tk can deliver a programmatic slider update's callback on the next event pump, after `_updating_slider` is cleared. Treating that callback as a seek resets the playback clock every frame and slows real-time playback.
+
+**Solution:** `LogPlaybackControls._on_slider()` ignores the current frame index. Only an actual position change seeks and resets the clock; automatic slider updates preserve accumulated elapsed time.
+
 **Problem:** The simulator already rendered trailing bot coordinate pairs, but the game loop did not log them; session recordings also saved only ball annotations.
 
 **Solution:** `main.py` appends friendly and enemy world-coordinate pairs after the 13 controller fields in plain/live logs. `RecordingSession.record_game(..., other_bots=...)` stores the same positions in an optional JSON CSV column; `game_event_tokens()` expands them for the existing simulator parser. Camera callbacks include all bot detections in the same timestamped event as the ball, saved as the optional `bots` JSON column and drawn by `annotate_video_frame()`. Missing columns in older recordings mean empty lists. Bot projection uses the bounding-box centre for both bearing and radial distance.

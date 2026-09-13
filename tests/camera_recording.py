@@ -159,7 +159,8 @@ def inference_scene_measurement_returns_ball_and_bots_atomically():
     camera.detection_callback = lambda _event: camera._infer_stop.set()
     camera._infer_loop()
 
-    frame_id, bearing, distance, bot_measurements = camera.get_scene_measurement()
+    frame_id, bearing, distance, bot_measurements, lined_up = camera.get_scene_measurement()
+    assert lined_up is False
     assert frame_id == 1
     assert bearing is not None
     assert distance == pytest.approx(0.0)

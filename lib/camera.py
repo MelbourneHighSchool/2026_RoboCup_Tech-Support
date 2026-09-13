@@ -34,6 +34,13 @@ DEFAULT_BALL_MODEL_PATH = _PROJECT_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
 
 
+def _goal_lined_up(contours, frame_width, frame_height):
+    """Check the filled target goal against the centre-to-left-edge segment."""
+    mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
+    cv2.drawContours(mask, contours, -1, 255, cv2.FILLED)
+    return bool(np.any(mask[frame_height // 2, :frame_width // 2 + 1]))
+
+
 def _detection_dict_from_xyxy(xyxy, confidence, frame_width, frame_height, *, point="centre"):
     """Build the ball-style detection dict from an xyxy box.
 
@@ -132,6 +139,7 @@ class Camera:
             self._bearing = None
             self._distance = None
             self._bot_measurements = []
+            self._lined_up = False
             self._frame_id = 0
             self._measurement_lock = threading.Lock()
             self._capture_started = False
@@ -306,20 +314,21 @@ class Camera:
             return self._frame_id, self._bearing, self._distance
 
     def get_scene_measurement(self):
-        """Atomically return frame_id, ball bearing/distance, and bot polar measurements.
+        """Atomically return frame ID, ball bearing/distance, bots, and goal alignment.
 
         Each bot entry is ``(bearing_deg, distance_mm)``. Distance may be ``None``
         when calibration is missing; bots without a usable bearing are omitted.
         """
         if self._is_shutting_down:
             with self._measurement_lock:
-                return self._frame_id, None, None, []
+                return self._frame_id, None, None, [], False
         with self._measurement_lock:
             return (
                 self._frame_id,
                 self._bearing,
                 self._distance,
                 list(self._bot_measurements),
+                self._lined_up,
             )
 
     def set_callback(self, callback_function):
@@ -489,6 +498,7 @@ class Camera:
             cv = getattr(self, "goal_detector", None) or OpenCV()
             contours = cv.process_image(hsv_frame, True)
             yellow_contours = cv.process_image(hsv_frame, False)
+            lined_up = _goal_lined_up(contours, frame_w, frame_h)
 
             with self._measurement_lock:
                 self._last_detection = detection
@@ -497,6 +507,7 @@ class Camera:
                 self._goal_contours = contours
                 self._yellow_goal_contours = yellow_contours
                 self._bot_measurements = bot_measurements
+                self._lined_up = lined_up
                 self._frame_id += 1
                 inference_sequence = self._frame_id
                 if getattr(self, "diagnostics_enabled", False):
