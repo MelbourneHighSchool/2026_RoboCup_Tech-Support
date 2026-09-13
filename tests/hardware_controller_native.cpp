@@ -109,7 +109,9 @@ void imu_protocol() {
     assert(!imu.snapshot().raw_yaw);
     imu.set_startup_yaw(10);
     state->imu.yaw_report(-80);
-    state->imu.gyro_report(1);
+    // Clockwise turn: raw yaw and sensor gyro Z decrease, while the
+    // startup-relative heading and the exported angular velocity increase.
+    state->imu.gyro_report(-1);
     imu.service();
     auto sample = imu.snapshot();
     close(*sample.raw_yaw, -80, 0.01);
@@ -128,7 +130,8 @@ void imu_protocol() {
     close(*imu.snapshot().yaw, -2, 0.01);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(110));
-    state->imu.gyro_report(-1);
+    // Anticlockwise sensor rate must yield negative project angular velocity.
+    state->imu.gyro_report(1);
     imu.service();
     sample = imu.snapshot();
     assert(!sample.yaw && !sample.raw_yaw && !sample.quaternion);

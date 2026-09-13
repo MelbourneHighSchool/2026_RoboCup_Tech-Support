@@ -76,7 +76,7 @@ The IMU enables game rotation vector (no magnetometer) and calibrated gyroscope
 at 10 ms intervals by default. Its native worker drains bounded batches of
 reports every 2 ms. `get_raw_imu_yaw()` is used for startup sampling;
 `set_startup_yaw(raw_yaw)` sets the reference; `get_yaw()` returns
-`wrap(startup_yaw - raw_yaw)`. `get_gyro_z_deg_s()` returns gyro Z in degrees/second
+`wrap(startup_yaw - raw_yaw)`. `get_gyro_z_deg_s()` returns negated sensor gyro Z in degrees/second
 (clockwise-positive with the existing upside-down mounting), and
 `get_latest_quaternion()` returns components in `(i, j, k, real)` order.
 

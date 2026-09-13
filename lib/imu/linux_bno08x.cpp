@@ -184,7 +184,9 @@ void LinuxBno08x::on_sensor(void* cookie, sh2_SensorEvent_t* event) {
         self.yaw_time_ = Clock::now();
         ++self.sample_.update_count;
     } else if (value.sensorId == SH2_GYROSCOPE_CALIBRATED) {
-        const double z = value.un.gyroscope.z * DEG;
+        // Match startup_yaw - raw_yaw: the upside-down mounting requires
+        // reversing sensor Z to report clockwise-positive angular velocity.
+        const double z = -value.un.gyroscope.z * DEG;
         if (!std::isfinite(z)) return;
         self.sample_.gyro_z = z;
         self.gyro_time_ = Clock::now();

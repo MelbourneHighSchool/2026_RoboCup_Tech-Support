@@ -236,6 +236,10 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 
 ## Native BNO08x / SH-2 (`lib/imu/linux_bno08x.cpp`)
 
+**Problem:** MCL heading moved opposite to the physical turn while fast-rotation gating disabled scan correction. Quaternion yaw was reversed with `startup_yaw - raw_yaw`, but sensor gyro Z was passed through with its original sign.
+
+**Solution:** The native adapter exports `-sensor_gyro_z * 180/pi` so clockwise turns produce positive relative yaw changes and positive angular velocity with the upside-down mounting. Python callers pass this value directly without another negation. The absolute-rate rotation gate is unaffected. Native protocol tests cover both rate signs; rebuild the hardware extension on the Pi after updating.
+
 **Problem:** The imported Adafruit wrapper needs Arduino/BusIO, but the underlying SH-2/SHTP sources are portable C. SH-2 stores a global session; `sh2_open()` can return success after reset timeout, ignores the HAL open result, and its product-ID operation originally had no timeout. Returning zero from HAL writes also triggers an unbounded retry loop.
 
 **Solution:** Compile the four SH-2 core `.c` files as C11 and the Linux adapter as C++17; exclude the Arduino wrapper. The adapter claims one session per process, checks transport errors and reset completion, and returns negative write errors. `getProdIdOp` has a one-second timeout. I2C reads repeat the four-byte SHTP header; the adapter reconstructs bounded transfers from 32-byte chunks, timestamps arrival with a monotonic microsecond counter, and re-enables reports after resets outside the callback. All IMU service and motor I/O share the controller's native bus mutex.
