@@ -10,8 +10,8 @@ The Pi will begin all communications with a START flag. This is done by pulling 
 At the start of each message, the Raspberry Pi will send an address frame to the PCB's I2C address, `0x37`. This begins with the START flag, by pulling SDA low first, then pulling SCL low, then it will send the address MSB first. After the address, it send the read-write bit. A read command means that the Pi wants to know the current state of every phototransistor. A write command means that the Pi wants the PCB execute some command. The PCB will then pull SDA low as an ACK. If the ACK bit is missing, the Pi will immediately halt communication and report an error.
 
 ## Data Frame
-Each data frame consists of one data byte (MSB first) followed by an ACK.
-If the read-write bit was a 1, the Pi will expect the PCB to send over the phototransistor information over 32 data bytes, with an ACK from the Pi after each one. If the read-write bit was a 0, the Pi will send a command in 1 data frame.
+Each data frame consists of data bytes (MSB first), each followed by an ACK.
+If the read-write bit was a 1, the Pi will expect the PCB to send over the phototransistor information over 32 data bytes, with an ACK from the Pi after each one. If the read-write bit was a 0, the Pi will send a command in 1 data byte with an ACK from the PCB after.
 
 ### Commands
 If the data byte is `0xFF`, the Pi is sending a kick command. For any other byte the Pi is setting a target brightness for the LED ring, where `0x00` is 0% and `0xFE` is 100%.
