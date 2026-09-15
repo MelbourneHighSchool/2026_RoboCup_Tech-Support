@@ -12,6 +12,7 @@ using namespace hardware;
 namespace {
 struct Packet { int address; std::vector<uint8_t> bytes; };
 struct State {
+    State() { imu.auto_reports = true; }
     FakeBno08x imu;
     std::mutex mutex;
     std::vector<Packet> packets;
@@ -35,8 +36,13 @@ public:
             state_->imu.transfer(reading, data, size);
             return;
         }
-        // Once an IMU header is read, all chunks must finish before any motor I/O.
+        // Once an IMU header is read, all chunks must finish before any other I/O.
         assert(!state_->imu.peeked);
+        if (address == 0x3c) {
+            state_->packets.push_back({address, {data, data + size}});
+            if (state_->fail_address == address) throw std::runtime_error("OLED unavailable");
+            return;
+        }
         if (state_->block_motor) {
             state_->motor_blocked = true;
             while (state_->block_motor)
@@ -98,6 +104,7 @@ template<class F> void await_condition(F condition) {
 }
 void imu_protocol() {
     auto state = std::make_shared<State>();
+    state->imu.auto_reports = false;
     FakeWire wire(state);
     LinuxBno08x imu(wire);
     throws([&] { LinuxBno08x duplicate(wire); });
@@ -173,6 +180,8 @@ void native_yaw_control() {
     state->imu.auto_reports = true;
     HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
     controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
+    controller.set_startup_yaw(0);
     await_condition([&] { return controller.get_yaw().has_value(); });
     // One movement request: subsequent yaw changes must affect the motors without move().
     controller.move(0, 500, 90, 1, 1);
@@ -199,17 +208,24 @@ void native_yaw_control() {
     assert(!controller.get_raw_imu_yaw() && !controller.get_latest_quaternion());
     assert(controller.imu_update_count() == updates);
     close(common_rpm(), 0, 0.01);
-    close(controller.current_speed(), 500);
-    // Translation still uses the retained 60-degree yaw during the outage.
+    close(controller.current_speed(), 500); // Health reporting alone does not replace commands.
+    assert(!controller.health().imu_healthy);
+    assert(controller.health().imu_recovery_generation > 0);
+    controller.move(0, 0, 0, 0, 0); // Same command main.py sends while paused.
+    wait_ticks(controller, controller.loop_count() + 5);
+    close(controller.current_speed(), 0);
     const auto velocity = controller.get_measured_body_velocity_mm_s(0);
-    close(velocity.first, 250, 0.1);
-    close(velocity.second, 500 * std::sqrt(3.0) / 2, 0.1);
+    close(velocity.first, 0); close(velocity.second, 0);
     {
         std::lock_guard<std::mutex> lock(state->mutex);
-        assert(has_packet(*state, 29, {0x11, 0, 0, 1, 0}));
+        assert(has_packet(*state, 29, {0x11, 0, 0, 0, 0}));
         state->imu.fail_read = false;
         state->imu.yaw = 0;
     }
+    await_condition([&] { return controller.health().imu_healthy; });
+    wait_ticks(controller, controller.loop_count() + 2);
+    close(controller.current_speed(), 0); // Last target remains the normal paused command.
+    controller.move(0, 500, 90, 1, 1);
     await_condition([&] { return std::abs(common_rpm() + 100) < 0.01; });
     {
         std::lock_guard<std::mutex> lock(state->mutex);
@@ -266,6 +282,8 @@ void lifecycle(int count) {
     auto state = std::make_shared<State>();
     HardwareController controller(calibration(count), config, "unused", std::make_unique<FakeWire>(state),
                                   0x4a, 10, -1, "", nullptr, 2.5, 0.75);
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         for (int i = 0; i < count; ++i) {
@@ -342,6 +360,8 @@ void kicker_control() {
     HardwareController controller(calibration(4), config, "unused",
         std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
         std::make_unique<FakeKicker>(gpio), 8.0, 1.0, 0.01, 0.1);
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
     auto wait = [&](size_t count, bool ended) {
         std::unique_lock<std::mutex> lock(gpio->mutex);
         assert(gpio->changed.wait_for(lock, std::chrono::seconds(2), [&] {
@@ -382,6 +402,8 @@ void kicker_failure() {
     HardwareController controller(calibration(4), config, "unused",
         std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
         std::make_unique<FakeKicker>(gpio));
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
     controller.move(0, 0, 0, 0, 0, true);
     {
         std::unique_lock<std::mutex> lock(gpio->mutex);
@@ -436,6 +458,8 @@ void failures() {
     for (int i = 0; i < 5; ++i) assert(has_packet(*state, 25+i, {0x21, 2}));
     state = std::make_shared<State>();
     HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         state->fail_address = 25;
@@ -449,6 +473,8 @@ void failures() {
         catch (const MotorCommunicationError&) { failed = true; }
     }
     assert(failed);
+    assert(controller.health().fault_source == "MOTOR");
+    assert(controller.health().motor_address == 25);
     throws([&] { controller.move(0, 0, 0, 0, 0); }); // Fault remains latched.
     throws([&] { controller.stop(); }); // Shutdown failures are reported.
     {
@@ -465,6 +491,8 @@ void failures() {
 void dynamic_current_limits() {
     auto state = std::make_shared<State>();
     HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
     controller.set_drive_current_limits(0.75, 2.5);
     throws([&] { controller.set_drive_current_limits(-1, 2); });
     wait_ticks(controller, 2);
@@ -487,7 +515,69 @@ void dynamic_current_limits() {
     controller.stop();
     throws([&] { controller.set_drive_current_limits(1, 2); });
 }
+void shared_display_lifecycle() {
+    auto state = std::make_shared<State>();
+    auto wire = std::make_shared<FakeWire>(state);
+    auto display = std::make_shared<StatusDisplay>("unused", 0x3c, wire);
+    HardwareController controller(calibration(4), config, "unused", nullptr,
+                                  0x4a, 10, -1, "", nullptr, 8, 1, 0.02, 0.5, display);
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
+    display->update("STRIKER", true, "RUNNING");
+    controller.move(0, 500, 0, 0);
+    wait_ticks(controller, controller.loop_count() + 5);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->fail_address = 0x3c;
+    }
+    display->component("OTHER", '!', "DISPLAY TEST");
+    await_condition([&] { return !display->error().empty(); });
+    assert(controller.health().error.empty());
+    assert(controller.health().imu_healthy);
+    controller.stop();
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->fail_address = -1;
+    }
+    display->update("STRIKER", false, "PAUSED"); // Still usable after controller stop.
+    display->stop();
+    std::lock_guard<std::mutex> lock(state->mutex);
+    assert(has_packet(*state, 0x3c, {0, 0xae}));
+}
+void imu_pause_finishes_kicker() {
+    auto state = std::make_shared<State>();
+    auto gpio = std::make_shared<KickState>();
+    HardwareController controller(calibration(5), config, "unused",
+        std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
+        std::make_unique<FakeKicker>(gpio), 8, 1, 0.4, 0.1);
+    controller.set_startup_yaw(0);
+    await_condition([&] { return controller.health().imu_healthy; });
+    controller.move(0, 500, 0, 0, 1, true);
+    await_condition([&] { std::lock_guard<std::mutex> lock(gpio->mutex); return gpio->active; });
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->imu.gyro_enabled = false; // Report loss even if yaw still arrives.
+    }
+    await_condition([&] { return !controller.health().imu_healthy; });
+    controller.move(0, 0, 0, 0, 0); // Ordinary pause; leave the active pulse alone.
+    {
+        std::lock_guard<std::mutex> lock(gpio->mutex);
+        assert(gpio->active);
+    }
+    await_condition([&] { std::lock_guard<std::mutex> lock(gpio->mutex); return !gpio->active; });
+    {
+        std::lock_guard<std::mutex> lock(gpio->mutex);
+        assert(gpio->ends[0] - gpio->starts[0] >= std::chrono::milliseconds(400));
+    }
+    wait_ticks(controller, controller.loop_count() + 2);
+    close(controller.current_speed(), 0);
+    assert(controller.get_yaw());
+    assert(!controller.get_gyro_z_deg_s());
+    controller.stop();
+}
 int main() {
+    shared_display_lifecycle();
+    imu_pause_finishes_kicker();
     dynamic_current_limits();
     imu_protocol();
     kinematics();

@@ -766,6 +766,11 @@ void loc_init_map(float pitch_x, float pitch_y) {
     g_static_segments.push_back({pitch_x, GOAL_BOTTOM_Y, GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y});
 }
 
+void loc_clear_imu_yaw() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_imu_yaw_valid = false;
+}
+
 void loc_set_imu_yaw(float yaw_deg) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_imu_yaw_deg = wrap_angle_deg(yaw_deg);

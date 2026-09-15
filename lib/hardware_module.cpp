@@ -14,7 +14,8 @@ std::unique_ptr<HardwareController> from_addresses(
     double max_rpm, double yaw_correct_threshold, const std::string& calibration_file,
     const std::string& i2c_device, int imu_address, int imu_report_interval_ms,
     int kicker_pin, const std::string& kicker_gpiochip, double drive_motor_current_limit,
-    double dribbler_motor_current_limit, double kick_pulse_length, double kick_cooldown) {
+    double dribbler_motor_current_limit, double kick_pulse_length, double kick_cooldown,
+    std::shared_ptr<hardware::StatusDisplay> display) {
     // File parsing runs once with the GIL. All motor I/O and control are native C++.
     std::filesystem::path path(calibration_file);
     if (path.is_relative()) {
@@ -52,12 +53,21 @@ std::unique_ptr<HardwareController> from_addresses(
     return std::make_unique<HardwareController>(calibration,
         hardware::DriveConfig{diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold}, i2c_device,
         nullptr, imu_address, imu_report_interval_ms, kicker_pin, kicker_gpiochip, nullptr,
-        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown);
+        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown, std::move(display));
 }
 }
 PYBIND11_MODULE(hardware_controller, module) {
     module.doc() = "Native hardware controller: motors, BNO08x IMU and GPIO kicker";
     py::register_exception<hardware::MotorCommunicationError>(module, "MotorCommunicationError");
+    py::class_<hardware::StatusDisplay, std::shared_ptr<hardware::StatusDisplay>>(module, "StatusDisplay")
+        .def(py::init<const std::string&, int>(), py::arg("i2c_device") = "/dev/i2c-1",
+             py::arg("address") = 0x3c)
+        .def("update", &hardware::StatusDisplay::update, py::arg("mode"), py::arg("run"),
+             py::arg("state"), py::arg("detail") = "")
+        .def("component", &hardware::StatusDisplay::component, py::arg("source"),
+             py::arg("health"), py::arg("error") = "")
+        .def_property_readonly("error", &hardware::StatusDisplay::error)
+        .def("stop", &hardware::StatusDisplay::stop, py::call_guard<py::gil_scoped_release>());
     py::class_<HardwareController>(module, "HardwareController")
         .def_static("from_i2c_addresses", &from_addresses,
             py::arg("i2c_addresses"), py::arg("diameter"), py::arg("max_yaw_rpm"),
@@ -68,11 +78,21 @@ PYBIND11_MODULE(hardware_controller, module) {
             py::arg("kicker_pin") = -1, py::arg("kicker_gpiochip") = "",
             py::arg("drive_motor_current_limit") = 8.0,
             py::arg("dribbler_motor_current_limit") = 1.0,
-            py::arg("kick_pulse_length") = 0.02, py::arg("kick_cooldown") = 0.5)
+            py::arg("kick_pulse_length") = 0.02, py::arg("kick_cooldown") = 0.5,
+            py::arg("display") = nullptr)
         .def("move", &HardwareController::move, py::arg("direction"), py::arg("speed"),
              py::arg("rotation"), py::arg("rotation_speed"),
              py::arg("dribbler") = 0, py::arg("kick") = false,
              py::call_guard<py::gil_scoped_release>())
+        .def("health", [](const HardwareController& self) {
+            const auto h = self.health();
+            py::dict result;
+            result["imu_healthy"] = h.imu_healthy;
+            result["imu_recovery_generation"] = h.imu_recovery_generation;
+            result["fault_source"] = h.fault_source;
+            result["error"] = h.error; result["motor_address"] = h.motor_address;
+            return result;
+        })
         .def("get_raw_imu_yaw", &HardwareController::get_raw_imu_yaw)
         .def("set_drive_current_limits", &HardwareController::set_drive_current_limits,
              py::arg("constant_speed_amps"), py::arg("acceleration_amps"),

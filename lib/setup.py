@@ -50,7 +50,7 @@ hardware_module = Extension(
     sources=[str(lib_dir / name) for name in (
         'hardware_module.cpp', 'hardware_controller.cpp',
         'PowerfulBLDCdriver.cpp', 'linux_wire.cpp',
-        'linux_kicker.cpp', 'imu/linux_bno08x.cpp', 'imu/sh2.c', 'imu/shtp.c',
+        'linux_kicker.cpp', 'status_display.cpp', 'imu/linux_bno08x.cpp', 'imu/sh2.c', 'imu/shtp.c',
         'imu/sh2_SensorValue.c', 'imu/sh2_util.c',
     )],
     include_dirs=[pybind11_include, str(lib_dir)],

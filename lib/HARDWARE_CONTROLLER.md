@@ -3,7 +3,8 @@
 `main.py` uses `lib.hardware_controller.HardwareController`, a pybind11 extension.
 The C++ controller owns the four drive motors and optional fifth dribbler through
 `PowerfulBLDCdriver`, plus a BNO08x IMU through the portable SH-2/SHTP core.
-It also owns an optional GPIO kicker. The display remains in Python.
+It also owns an optional GPIO kicker and shares its native I2C transport with
+`StatusDisplay`, a landscape SSD1306 status screen. Python does no display I2C.
 
 Build on the target Pi using its runtime Python environment:
 
@@ -82,12 +83,28 @@ reports every 2 ms. `get_raw_imu_yaw()` is used for startup sampling;
 
 Yaw/quaternion and gyro have independent 100 ms freshness deadlines. Getters
 return `None` before data arrives or when their stream is stale; relative yaw
-also needs a startup reference. While yaw is unavailable, heading correction is
-disabled and translation uses the last known relative yaw (zero before the first
-reference). Translation and dribbler continue. Correction resumes on a fresh yaw
-report. Reset notifications immediately invalidate both streams and re-enable
-both reports. The stored startup reference is retained; a sensor reset can change
-its raw yaw origin, so re-zero while paused if the physical heading reference shifts.
+also needs a startup reference. Without fresh yaw, native heading correction is
+disabled and translation uses the last known heading. Native health reporting
+does not replace movement targets or interrupt a kick.
+
+`main.py` handles IMU loss by setting `run = False` and entering the same paused
+branch as the pause switch. That branch sends `move(0, 0, 0, 0, 0)`: translation
+ramps down normally, rotation and dribbler targets are zero, and an already active
+kick finishes its pulse. Only shutdown or a fatal controller failure interrupts
+a pulse. The screen reports `RUN OFF / PAUSED` with the IMU error.
+
+Recovery remains in Python: the operator pauses, main collects 25 distinct fresh
+yaw readings at 20 ms intervals with a fresh gyro, and re-zeroes before permitting
+a later run transition. Reconnection alone cannot restart the game. A new outage
+invalidates the sampling window; `health()["imu_recovery_generation"]` detects
+outages even between Python polls. There is no native pause/acknowledgement API.
+
+`health()` returns `imu_healthy`, `imu_recovery_generation`, `fault_source`,
+`error`, and `motor_address` (decimal, `-1` when inapplicable). Motor faults use
+source `MOTOR`; kicker faults use `OTHER`. IMU constructor failures are reported
+as `IMU`, rather than motor disconnections. A sensor that never reports is marked
+unavailable after one second. Reset notifications invalidate reports and
+re-enable both streams; a reset can shift the raw yaw origin.
 
 `loop_count`, `current_speed`, `current_direction`, and `imu_update_count` are
 read-only diagnostics. The IMU counter counts decoded quaternion reports, not polls.
@@ -101,8 +118,8 @@ if the physical bus/driver fails or the process is forcibly killed.
 `linux_wire.*` provides only the Arduino Wire operations used by the supplied
 driver. It uses addressed Linux `I2C_RDWR` messages and checks failed/short
 transfers. A native mutex serializes motor operations and complete IMU service
-batches, including the repeated SHTP headers in 32-byte I2C reads. The kernel
-serializes messages with Python display transfers. The controller must be the
+batches, including the repeated SHTP headers in 32-byte I2C reads. With a display,
+both objects share the same `TwoWire` object and its transaction mutex. The controller must be the
 sole owner of its motor and IMU addresses; do not run the legacy Python IMU,
 movement controller, calibration, or dashboard hardware sessions alongside it.
 The SH-2 core has global session state, so only one native BNO08x session may be
@@ -128,8 +145,8 @@ once: output high for 20 ms, then low and input with pull-down, matching
 ignored. An old target does not fire again; another accepted `move()` is required.
 A newer move can replace a pending request but does not interrupt an active pulse.
 The pulse uses no I2C lock. Shutdown interrupts it and joins the kicker worker
-before waiting for motor/IMU shutdown. GPIO faults latch a controller error using
-the existing `MotorCommunicationError` exception and stop the workers. Pulse
+before waiting for motor/IMU shutdown. GPIO faults latch an `OTHER` controller
+error, raise `RuntimeError` to callers, and stop the workers. Pulse
 duration is nominal: Linux scheduling can extend it. The legacy Python kicker
 remains available for standalone scripts, which must not share this GPIO.
 
@@ -150,3 +167,66 @@ Fake GPIO tests cover pulses while I2C is blocked, cooldown, consumed requests,
 shutdown during a pulse, repeated shutdown, and GPIO failure cleanup.
 Physical motor direction, IMU signs, timing, and bus coexistence still
 need verification on the Pi with the wheels lifted before a field run.
+
+## Native OLED status
+
+```python
+from lib.hardware_controller import StatusDisplay
+
+display = StatusDisplay(i2c_device="/dev/i2c-1", address=0x3C)
+# Pass display=display to HardwareController.from_i2c_addresses(...).
+# The supplied display determines the shared I2C transport.
+display.update("STRIKER", True, "RUNNING")
+display.component("LIDAR", "!", "DISCONNECTED - ODOM")
+# Stop hardware, camera, LIDAR, and other resources first.
+display.stop()  # Clears RAM, turns the screen/charge pump off, joins its worker.
+```
+
+`update(mode, run, state, detail="")` publishes text without I2C. `component(source,
+health, error="")` uses `?` for pending initialization, `+` for healthy, and `!` for
+unavailable. Passing an empty error clears that source's error. Native motor/IMU
+workers publish their own health, and a fatal native controller fault overrides
+the run label to `BLOCKED` even if Python is stalled. IMU pauses are handled by main. `display.error` reports OLED transport errors.
+
+The 128×64 screen has a large mode heading, run/state row, and `L`, `C`, `I`, `M`
+health indicators. Remaining rows cycle errors every two seconds with a page/count
+label. Long details scroll in 21-character steps. With no errors it shows startup
+progress, waiting for data, or `ALL SYSTEMS OK`. Fonts and rendering are native;
+no Luma/Pillow runtime dependency is added. Do not run `lib/display.py` against the
+same OLED while this screen is active.
+
+The display worker runs at at most 5 Hz, sends changed 16-byte framebuffer chunks,
+tries the shared bus without blocking, and yields between chunks. OLED failures
+are reported on stderr and retried every two seconds without stopping the motors.
+Display lifetime spans hardware initialization and fault shutdown. `main.py`
+starts it before sensor setup, then clears it after cleanup without an exit delay.
+Consequently a fatal error may only appear briefly before exit; full details
+remain in the console. A disconnected/unpowered OLED cannot show a final message.
+
+`lib/game_status.py` monitors scans and camera capture/inference independently of
+the strategy loop, including while paused. One second without progress reports
+an outage. Raw scans, not MCL corrections/confidence, determine LIDAR health, so
+rotation gating and dead reckoning do not count as disconnection. Camera outages
+remove stale scenes while retaining the existing short ball extrapolation,
+teammate input (when communication is enabled), and break-beam possession.
+`lidar.clear_imu_yaw()` removes the retained IMU prior without resetting particles;
+main clears it while IMU input is unavailable, then restores it after a fresh re-zero. Startup still requires
+successful sensor initialization and a first pose. Automatic device reopening
+is not added.
+
+Offline checks:
+
+```bash
+.venv/bin/python -m unittest tests.test_game_status tests.test_hardware_controller tests.test_localisation_motion
+.venv/bin/ruff check
+```
+
+Pi acceptance: rebuild both extensions; check orientation/readability for all
+three modes; toggle pause; unplug each sensor independently while observing the
+screen and console; verify LIDAR prediction and camera fallback; verify IMU loss
+enters the normal paused branch and requires a paused re-zero before running again;
+verify an active kick finishes normally.
+Check simultaneous faults, motor-address reporting, missing OLED operation, and
+blanking on normal/error exit. Compare `main.py --fps` drive/IMU rates with display
+updates active against the prior baseline. Physical timing and driver response
+must be checked on the robot; the offline suites emulate the bus and GPIO.

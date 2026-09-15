@@ -230,7 +230,7 @@ and must not also construct a Python Kicker for the same line.
 
 **Problem:** The supplied `PowerfulBLDCdriver` C++ files use Arduino `Wire`, so they cannot compile directly on Linux. A native motor worker also cannot acquire Python's shared I2C lock without depending on the GIL.
 
-**Solution:** `linux_wire.h/.cpp` implements the driver's small Wire surface using addressed Linux `I2C_RDWR` messages, checking transfer failures. The native controller serializes motor operations with its own mutex; Linux serializes individual transfers with the Python display. Only one controller may own any motor or IMU address, since register-selection/read pairs must not interleave with another owner. `main.py`, dashboard driving, and hardware tests use the pybind11 `lib.hardware_controller.HardwareController`; its workers use no Python callbacks. Calibration JSON is matched by address, and four wheels plus an optional dribbler are supported. Physical calibration remains in `legacy/movement.py` and must run separately from the game controller.
+**Solution:** `linux_wire.h/.cpp` implements the driver's small Wire surface using addressed Linux `I2C_RDWR` messages, checking transfer failures. The native controller and status display share a `TwoWire` transport and transaction mutex; motor register pairs, IMU batches, and individual display chunks cannot interleave. Only one controller may own any motor or IMU address, since register-selection/read pairs must not interleave with another owner. `main.py`, dashboard driving, and hardware tests use the pybind11 `lib.hardware_controller.HardwareController`; its workers use no Python callbacks. Calibration JSON is matched by address, and four wheels plus an optional dribbler are supported. Physical calibration remains in `legacy/movement.py` and must run separately from the game controller.
 
 Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, or only motors with `SOCCER_HARDWARE_ONLY=1 .venv/bin/python lib/setup.py build_ext --inplace`. Rebuild on the Pi with its runtime Python. Offline protocol/lifecycle tests: `.venv/bin/python -m unittest tests.test_hardware_controller`. See `lib/HARDWARE_CONTROLLER.md` for the API and ownership/shutdown behavior.
 
@@ -244,7 +244,7 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 
 **Solution:** Compile the four SH-2 core `.c` files as C11 and the Linux adapter as C++17; exclude the Arduino wrapper. The adapter claims one session per process, checks transport errors and reset completion, and returns negative write errors. `getProdIdOp` has a one-second timeout. I2C reads repeat the four-byte SHTP header; the adapter reconstructs bounded transfers from 32-byte chunks, timestamps arrival with a monotonic microsecond counter, and re-enables reports after resets outside the callback. All IMU service and motor I/O share the controller's native bus mutex.
 
-`main.py` now samples native raw yaw, sets the startup reference in C++, and reads relative yaw and gyro for LIDAR. `move(direction, speed, rotation, rotation_speed, dribbler=0)` has no yaw argument. Each drive tick uses native yaw; after 100 ms without a quaternion, yaw correction is disabled while translation uses the last known heading. Gyro freshness is separate. Both reports resume automatically; the startup reference is retained across a sensor reset, so re-zero while paused if its raw origin shifts. Stop joins both workers and releases SH-2. Python IMU/dashboard workflows must run separately. The hardware-only build now includes both motors and IMU.
+`main.py` now samples native raw yaw, sets the startup reference in C++, and reads relative yaw and gyro for LIDAR. `move(direction, speed, rotation, rotation_speed, dribbler=0)` has no yaw argument. Each drive tick uses native yaw. Loss of either yaw or gyro for 100 ms is reported to `main.py`, which sets `run = False` and uses its normal paused branch. Active kicks finish normally. Recovery requires the operator to pause and main to collect 25 fresh samples and re-zero before running again. The startup reference is retained across a sensor reset, so re-zero while paused if its raw origin shifts. Stop joins both workers and releases SH-2. Python IMU/dashboard workflows must run separately. The hardware-only build now includes both motors and IMU.
 
 ## Separate ball and bot distance calibration
 
@@ -271,3 +271,30 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 **Problem:** `goalie()` left `direction=None` and the default speed of 700 when holding a captured ball or turning toward a ball behind it. Passing that command to native `HardwareController.move()` raises `TypeError` because its heading must be numeric.
 
 **Solution:** Before returning a goalie command, convert an unset translation direction to direction 0 and speed 0, preserving rotation, dribbler, and kick. Setting only direction to 0 would cause unintended forward motion. Regression checks: `.venv/bin/python -m unittest tests.test_goalie_commands`.
+
+## Native status display and IMU recovery
+
+**Problem:** A display owned solely by an initialized motor controller cannot show
+LIDAR startup failures or motor/IMU constructor failures. Separate Python display
+transactions also cannot participate in the native transaction mutex.
+
+**Solution:** `lib.hardware_controller.StatusDisplay` owns a shared `TwoWire`
+transport and its mutex; pass `display=display` to the controller factory. Native
+SSD1306 updates are chunked and yield to motor/IMU work. Create the display before
+sensor setup and call `display.stop()` after hardware cleanup to clear it. The
+standalone `lib/display.py` test must run separately. API and Pi verification are
+in `lib/HARDWARE_CONTROLLER.md`.
+
+**Problem:** Stopping calls to `lidar.set_imu_yaw()` does not remove the last prior;
+MCL retains it indefinitely. Also, a short IMU outage between Python polls can
+leave pre-outage values in a recovery average even after fresh reports resume.
+
+**Solution:** Call `lidar.clear_imu_yaw()` when IMU input is unavailable; it clears
+validity without resetting particles. `main.py` sets `run = False` on IMU loss and
+uses its ordinary paused branch (`move(0, 0, 0, 0, 0)`). Translation decelerates
+normally and active kicks finish their pulse; native health reporting does not
+force motor targets or interrupt kicks. Python resets its recovery average when
+`health()["imu_recovery_generation"]` changes, collects distinct fresh samples
+while the operator has paused, then calls `set_startup_yaw()` before permitting a
+later run transition. Raw scan progress remains independent of localization
+confidence and gating when diagnosing LIDAR outages.

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <mutex>
 #include <vector>
 
 // Minimal Wire interface used by PowerfulBLDCdriver. The owner serializes access.
@@ -9,6 +10,7 @@
 class TwoWire {
 public:
     virtual ~TwoWire() = default;
+    std::mutex mutex; // Serialize complete register transactions across native owners.
     void beginTransmission(uint8_t address);
     void write(uint8_t value);
     void endTransmission();

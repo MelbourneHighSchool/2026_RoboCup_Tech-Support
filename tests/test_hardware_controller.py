@@ -33,7 +33,7 @@ class HardwareControllerTests(unittest.TestCase):
                  *[str(ROOT / path) for path in (
                      "tests/hardware_controller_native.cpp",
                      "lib/hardware_controller.cpp", "lib/PowerfulBLDCdriver.cpp",
-                     "lib/linux_wire.cpp", "lib/linux_kicker.cpp",
+                     "lib/linux_wire.cpp", "lib/linux_kicker.cpp", "lib/status_display.cpp",
                      "lib/imu/linux_bno08x.cpp",
                  )], *objects, "-o", executable],
                 check=True,
@@ -106,13 +106,30 @@ class HardwareControllerTests(unittest.TestCase):
             "math": math, "deque": deque, "STARTUP_YAW_SAMPLE_COUNT": 2,
             "STARTUP_YAW_SAMPLE_INTERVAL": 0.02, "enter_pressed": lambda: False,
             "time": SimpleNamespace(sleep=lambda _: None),
-            "lidar": SimpleNamespace(set_imu_yaw=priors.append),
+            "lidar": SimpleNamespace(set_imu_yaw=priors.append, clear_imu_yaw=lambda: None),
         }
         exec(compile(helpers, str(ROOT / "main.py"), "exec"), namespace)  # noqa: S102 - local source helpers only
-        raw = iter([None, 179, -179])
-        relative = iter([None, 75])
-        hardware = SimpleNamespace(get_raw_imu_yaw=lambda: next(raw),
-                                   get_yaw=lambda: next(relative))
+        class FakeHardware:
+            def __init__(self):
+                self.count = 0
+                self.raw = iter([None, 179, -179])
+                self.relative = iter([None, 75])
+
+            @property
+            def imu_update_count(self):
+                self.count += 1
+                return self.count
+
+            def get_raw_imu_yaw(self):
+                return next(self.raw)
+
+            def get_yaw(self):
+                return next(self.relative)
+
+            def health(self):
+                return {"imu_healthy": True, "imu_recovery_generation": 0}
+
+        hardware = FakeHardware()
         reference = namespace["capture_startup_yaw"](hardware)
         self.assertAlmostEqual(abs(reference), 180)
         namespace["feed_imu_yaw_prior"](hardware)

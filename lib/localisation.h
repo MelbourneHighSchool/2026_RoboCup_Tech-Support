@@ -54,6 +54,7 @@ void loc_stop();
 void loc_reset();
 
 void loc_set_imu_yaw(float yaw_deg);
+void loc_clear_imu_yaw();
 void loc_set_motion_noise(float speed_coefficient);
 void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s);
 

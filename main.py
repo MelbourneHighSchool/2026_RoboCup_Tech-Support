@@ -6,7 +6,11 @@ import threading
 import time
 from collections import deque
 
-from lib.hardware_controller import HardwareController, MotorCommunicationError
+from lib.hardware_controller import (
+    HardwareController,
+    MotorCommunicationError,
+    StatusDisplay,
+)
 
 import defence
 import striker
@@ -15,6 +19,7 @@ from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
 from lib.config import BotMode, load_config
+from lib.game_status import GameStatus, ImuPause
 from lib.recording_session import RecordingSession
 
 LOG_FPS = 30 # How often the bot state is written to the log file
@@ -87,10 +92,8 @@ PAUSE_SWITCH_PIN = config.pause_switch_pin
 KICKER_PIN = config.kicker_pin
 BREAK_BEAM_PIN = config.break_beam_pin
 
-# Initialize the mode switch and pause switch
-mode_switch = switch.Switch(MODE_SWITCH_PIN)
-pause_switch = switch.Switch(PAUSE_SWITCH_PIN)
-bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
+# Hardware switches are initialized after the status display is available.
+bot_mode = MODE_SWITCH_OFF
 
 run = not USE_PAUSE
 
@@ -166,11 +169,13 @@ if args.stream:
     send_log.start_server_background()
     time.sleep(0.05)
 
+status = None
 log_recorder_stop = threading.Event()
 log_recorder_thread = None
 _latest_log_line = None
 _latest_log_lock = threading.Lock()
 _log_write_count = 0
+_log_error = None
 _log_write_count_lock = threading.Lock()
 _logic_loop_count = 0
 
@@ -182,7 +187,7 @@ def update_latest_log_snapshot(log_line: str) -> None:
 
 
 def _log_recorder_loop(path: str) -> None:
-    global _log_write_count
+    global _log_error, _log_write_count
     interval = 1.0 / LOG_FPS
     next_write = time.monotonic()
     try:
@@ -205,6 +210,9 @@ def _log_recorder_loop(path: str) -> None:
                         _log_write_count += 1
     except Exception as exc:
         print(f"Warning: log recorder stopped with error: {exc}")
+        _log_error = str(exc)
+        if status is not None:
+            status.report("LOG", exc)
 
 
 def get_log_write_count() -> int:
@@ -227,6 +235,8 @@ hardware_controller = None
 peer = None
 recording_session = None
 last_pose_time = None
+display = None
+startup_stage = "OTHER"
 
 def enter_pressed():
     if not sys.stdin.isatty():
@@ -251,6 +261,7 @@ class RollingYawSampler:
 
     def add(self, yaw):
         if yaw is None:
+            self.reset()
             return None
         self._samples.append(float(yaw))
         if len(self._samples) < self._samples.maxlen:
@@ -268,25 +279,50 @@ def capture_startup_yaw(
     """Average a short burst of IMU samples so startup yaw is not just the first reading."""
     print("Stabilizing IMU yaw reference...")
     sampler = RollingYawSampler(sample_count)
+    last_count = -1
+    last_generation = -1
     while True:
         if enter_pressed():
             raise KeyboardInterrupt
-        startup_yaw = sampler.add(imu_sensor.get_raw_imu_yaw())
-        if startup_yaw is not None:
-            return startup_yaw
+        count = imu_sensor.imu_update_count
+        health = imu_sensor.health()
+        generation = health["imu_recovery_generation"]
+        if generation != last_generation or not health["imu_healthy"]:
+            sampler.reset()
+        last_generation = generation
+        if health["imu_healthy"] and count != last_count:
+            startup_yaw = sampler.add(imu_sensor.get_raw_imu_yaw())
+            if startup_yaw is not None:
+                return startup_yaw
+        last_count = count
         time.sleep(sample_interval)
 
 
 def feed_imu_yaw_prior(imu_sensor):
     """Push startup-relative IMU yaw into MCL as a soft heading prior."""
     imu_yaw = imu_sensor.get_yaw()
-    if imu_yaw is None:
+    health = imu_sensor.health()
+    if imu_yaw is None or not health["imu_healthy"]:
+        lidar.clear_imu_yaw()
         return
     lidar.set_imu_yaw(imu_yaw)
 
 
 try:
+    try:
+        display = StatusDisplay()
+    except Exception as exc:
+        print(f"Warning: display unavailable: {exc}")
+    status = GameStatus(display, lidar, bot_mode.name)
+    status.start()
+    if _log_error is not None:
+        status.report("LOG", _log_error)
+    mode_switch = switch.Switch(MODE_SWITCH_PIN)
+    pause_switch = switch.Switch(PAUSE_SWITCH_PIN)
+    bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
+    status.update(bot_mode.name, False, "STARTING", "LIDAR")
     break_beam = Breakbeam(BREAK_BEAM_PIN)
+    startup_stage = "LIDAR"
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
@@ -303,6 +339,8 @@ try:
             raise KeyboardInterrupt
         time.sleep(0.1)
 
+    startup_stage = "HARDWARE"
+    status.update(bot_mode.name, False, "STARTING", "MOTORS / IMU")
     print(f"Initializing Hardware Controller with motor I2C addresses {I2C_ADDRESSES}...")
     hardware_controller = HardwareController.from_i2c_addresses(
         I2C_ADDRESSES,
@@ -311,8 +349,11 @@ try:
         MAX_MOTOR_RPM,
         YAW_CORRECT_THRESHOLD,
         kicker_pin=int(KICKER_PIN.id),
+        display=display,
     )
+    status.attach_hardware(hardware_controller)
     hardware_controller.set_drive_current_limits(CONSTANT_SPEED_TORQUE, ACCELERATION_TORQUE)
+    status.update(bot_mode.name, False, "STARTING", "IMU REFERENCE")
     startup_yaw = capture_startup_yaw(hardware_controller)
     hardware_controller.set_startup_yaw(startup_yaw)
     print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
@@ -320,6 +361,8 @@ try:
 
     lidar.start_coordinates(2430, 1820)
 
+    startup_stage = "LIDAR"
+    status.update(bot_mode.name, False, "STARTING", "FIRST POSE")
     print("Waiting for first pose estimate...")
     last_wait_time = time.monotonic()
     while not lidar.is_coordinates_ready():
@@ -339,6 +382,7 @@ try:
             resolution=CAMERA_RESOLUTION,
             requested_fps=CAMERA_FPS,
         )
+        status.attach_recording(recording_session)
         recording_session.update_metadata(
             {
                 "bot_mode_at_start": bot_mode.name,
@@ -350,6 +394,8 @@ try:
         )
         print(f"Recording synchronized session to {recording_session.directory}")
 
+    startup_stage = "CAMERA"
+    status.update(bot_mode.name, False, "STARTING", "CAMERA")
     camera = Camera(
         CAMERA_PORT,
         resolution=CAMERA_RESOLUTION,
@@ -375,6 +421,8 @@ try:
         camera.start()
         print("Camera preview disabled (pass --camera-stream to enable MJPEG stream)")
 
+    status.attach_camera(camera)
+    startup_stage = "OTHER"
     if ENABLE_COMMUNICATION:
         peer = Peer(port=PEER_PORT)
         peer.start()
@@ -417,9 +465,16 @@ try:
 
     paused_yaw_sampler = RollingYawSampler()
     next_paused_yaw_sample_time = time.monotonic()
+    last_paused_imu_count = -1
+    last_imu_recovery_generation = -1
     next_recording_checkpoint_time = time.monotonic()
 
+    pause_was_pressed = False
+    requested_run = run
+    imu_pause = ImuPause(hardware_controller.health()["imu_recovery_generation"])
     while True:
+        if enter_pressed():
+            break
         if recording_session is not None:
             checkpoint_time = time.monotonic()
             if checkpoint_time >= next_recording_checkpoint_time:
@@ -428,34 +483,47 @@ try:
         if fps_monitor is not None:
             fps_monitor.maybe_print()
         was_run = run
-        if USE_PAUSE and pause_switch.read():
-            if SWITCHM == 1:
-                while pause_switch.read():
-                    time.sleep(0.01)
-                run = not run
+        was_requested_run = requested_run
+        pause_pressed = pause_switch.read() if USE_PAUSE else False
+        if USE_PAUSE:
+            if SWITCHM == 1 and pause_was_pressed and not pause_pressed:
+                requested_run = not requested_run
                 last_pose_time = time.monotonic()
             elif SWITCHM == 2:
-                run = True
-        if USE_PAUSE and SWITCHM == 2 and not pause_switch.read():
-            run = False
-        if was_run and not run:
+                requested_run = pause_pressed
+        pause_was_pressed = pause_pressed
+        health = hardware_controller.health()
+        run = imu_pause.update(requested_run, health)
+        status.report("IMU RECOVERY", "PAUSE TO RE-ZERO" if (
+            imu_pause.pending and health["imu_healthy"]) else "")
+        if not run:
+            bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
+        status.update(bot_mode.name, run)
+        if (was_run and not run) or (was_requested_run and not requested_run):
             paused_yaw_sampler.reset()
             next_paused_yaw_sample_time = time.monotonic()
         if not run:
             steering_state = False
             now = time.monotonic()
+            health = hardware_controller.health()
+            generation = health["imu_recovery_generation"]
+            if generation != last_imu_recovery_generation or not health["imu_healthy"]:
+                paused_yaw_sampler.reset()
+            last_imu_recovery_generation = generation
+            if not health["imu_healthy"]:
+                lidar.clear_imu_yaw()
             if now >= next_paused_yaw_sample_time:
-                sampled_yaw = paused_yaw_sampler.add(hardware_controller.get_raw_imu_yaw())
+                count = hardware_controller.imu_update_count
+                if health["imu_healthy"] and count != last_paused_imu_count:
+                    sampled_yaw = paused_yaw_sampler.add(hardware_controller.get_raw_imu_yaw())
+                    if sampled_yaw is not None:
+                        startup_yaw = sampled_yaw
+                        hardware_controller.set_startup_yaw(startup_yaw)
+                        imu_pause.rezeroed(requested_run, hardware_controller.health())
+                        feed_imu_yaw_prior(hardware_controller)
+                last_paused_imu_count = count
                 next_paused_yaw_sample_time = now + STARTUP_YAW_SAMPLE_INTERVAL
-                if sampled_yaw is not None:
-                    startup_yaw = sampled_yaw
-                    hardware_controller.set_startup_yaw(startup_yaw)
-                    feed_imu_yaw_prior(hardware_controller)
         if run:
-            if enter_pressed():
-                print("Shutdown requested, exiting.")
-                break
-
             _logic_loop_count += 1
 
             now_pose = time.monotonic()
@@ -464,8 +532,7 @@ try:
             gyro_z = hardware_controller.get_gyro_z_deg_s()
             omega = gyro_z if gyro_z is not None else 0.0
             yaw = hardware_controller.get_yaw()
-            if yaw is not None:
-                lidar.set_imu_yaw(yaw)
+            feed_imu_yaw_prior(hardware_controller)
             vx, vy = 0.0, 0.0
             if hardware_controller is not None:
                 yaw_for_odom = yaw if yaw is not None else 0.0
@@ -477,6 +544,8 @@ try:
 
             x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
             if x_pos is None or y_pos is None or yaw is None:
+                hardware_controller.move(0, 0, 0, 0, 0)
+                status.update(bot_mode.name, run, "BLOCKED", "WAITING FOR POSE")
                 time.sleep(0.01)
                 continue
 
@@ -487,7 +556,13 @@ try:
                 bot_measurements,
                 lined_up,
             ) = camera.get_scene_measurement()
-            has_new_camera_frame = camera_frame_id != last_camera_frame_id
+            camera_healthy = status.camera_ready
+            if not camera_healthy:
+                ball_direction = ball_distance = None
+                bot_measurements = []
+                lined_up = False
+                last_camera_bot_positions = []
+            has_new_camera_frame = camera_healthy and camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
             if has_new_camera_frame:
                 ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
@@ -655,12 +730,27 @@ try:
                 print(exc)
                 raise
         else:
-            bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
+            last_pose_time = time.monotonic()
             time.sleep(0.01)
             if hardware_controller is not None:
                 hardware_controller.move(0, 0, 0, 0, 0)
 
+except KeyboardInterrupt:
+    pass
+except Exception as exc:
+    if status is not None:
+        # Native constructor failures already publish MOTOR/IMU details directly.
+        source = startup_stage if startup_stage != "HARDWARE" else "OTHER"
+        status.report(source, exc)
+        status.update(bot_mode.name, run, "BLOCKED", "SHUTTING DOWN")
+        try:
+            status.poll()
+        except Exception as status_error:
+            print(f"Warning: failed to publish final status: {status_error}")
+    raise
 finally:
+    if status is not None:
+        status.stop()
     if log_recorder_thread is not None:
         log_recorder_stop.set()
         log_recorder_thread.join(timeout=1.0)
@@ -669,16 +759,22 @@ finally:
             peer.stop()
         except Exception as exc:
             print(f"Warning: failed to stop peer communication cleanly: {exc}")
+            if status is not None:
+                status.report("OTHER", exc)
     if hardware_controller is not None:
         try:
             hardware_controller.stop()
         except Exception as exc:
             print(f"Warning: failed to stop hardware cleanly: {exc}")
+            if status is not None:
+                status.report("OTHER", exc)
     if camera is not None:
         try:
             camera.stop()
         except Exception as exc:
             print(f"Warning: failed to stop camera cleanly: {exc}")
+            if status is not None:
+                status.report("CAMERA", exc)
     if recording_session is not None:
         try:
             if camera is not None:
@@ -693,7 +789,14 @@ finally:
             )
         except Exception as exc:
             print(f"Warning: failed to finalize recording session cleanly: {exc}")
+            if status is not None:
+                status.report("RECORDING", exc)
     try:
         lidar.shutdown()
     except Exception as exc:
         print(f"Warning: failed to shut down lidar cleanly: {exc}")
+        if status is not None:
+            status.report("LIDAR", exc)
+
+    if display is not None:
+        display.stop()

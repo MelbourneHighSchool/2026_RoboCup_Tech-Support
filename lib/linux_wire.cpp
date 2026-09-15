@@ -40,7 +40,7 @@ void LinuxWire::transfer(uint8_t address, bool reading, uint8_t* data, size_t si
     const int result = ioctl(fd_, I2C_RDWR, &transaction);
     if (result != 1) {
         throw std::system_error(result < 0 ? errno : EIO, std::generic_category(),
-                                "Motor I2C address " + std::to_string(address) +
+                                "I2C address " + std::to_string(address) +
                                 (reading ? " read" : " write"));
     }
 }

@@ -25,6 +25,25 @@ static double measured_variance(float speed, int steps) {
 }
 
 int main() {
+    loc_start();
+    loc_set_imu_yaw(90);
+    assert(g_imu_yaw_valid);
+    const auto before_clear = g_particles;
+    loc_clear_imu_yaw();
+    assert(!g_imu_yaw_valid && g_particles.size() == before_clear.size());
+    for (size_t i = 0; i < g_particles.size(); ++i) {
+        assert(g_particles[i].x == before_clear[i].x);
+        assert(g_particles[i].y == before_clear[i].y);
+        assert(g_particles[i].yaw_deg == before_clear[i].yaw_deg);
+        assert(g_particles[i].weight == before_clear[i].weight);
+    }
+    // A previous fix continues to move with odometry despite absent scans.
+    for (auto& particle : g_particles) { particle.x = 1000; particle.y = 900; particle.yaw_deg = 0; }
+    g_ready = true; g_pose.ok = true;
+    loc_predict_odometry(500, 0, 0, 0.1);
+    assert(loc_get_pose().ok && loc_get_pose().x > 1040);
+    loc_stop();
+
     // 1001 samples at 100 us span 100 ms, regardless of retrieval delay.
     assert(std::abs(scan_midpoint_s(1000000, 1001, 100.0, 1.2) - 1.05) < 1e-9);
     assert(std::abs(scan_midpoint_s(1000000, 1001, 100.0, 1.5) - 1.05) < 1e-9);

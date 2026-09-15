@@ -572,6 +572,7 @@ PYBIND11_MODULE(lidar, m) {
           py::arg("pitch_x"), py::arg("pitch_y"),
           "Start background MCL localization thread.");
 
+    m.def("clear_imu_yaw", &loc_clear_imu_yaw, "Remove the IMU prior without resetting localisation");
     m.def("set_imu_yaw", &set_imu_yaw,
           py::arg("yaw_deg"),
           "Set startup-relative IMU yaw for the soft MCL yaw prior.");

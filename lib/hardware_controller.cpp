@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <set>
 
 namespace hardware {
@@ -82,7 +83,8 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
                                      std::unique_ptr<KickerOutput> kicker_output,
                                      double drive_motor_current_limit,
                                      double dribbler_motor_current_limit,
-                                     double kick_pulse_length, double kick_cooldown) :
+                                     double kick_pulse_length, double kick_cooldown,
+                                     std::shared_ptr<StatusDisplay> display) :
     config_(config),
     drive_motor_current_limit_(current_limit_lsb(drive_motor_current_limit)),
     dribbler_motor_current_limit_(current_limit_lsb(dribbler_motor_current_limit)),
@@ -104,14 +106,22 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         throw std::invalid_argument("Invalid IMU address or report interval (1..1000 ms)");
     if (kicker_pin < -1 || kicker_pin > 27)
         throw std::invalid_argument("Kicker pin must be -1 (disabled) or BCM GPIO 0..27");
-    wire_ = transport ? std::move(transport) : std::make_unique<LinuxWire>(device);
+    display_ = std::move(display);
+    if (display_ && (transport || addresses.count(display_->address()) || imu_address == display_->address()))
+        throw std::invalid_argument("Display transport/address conflicts with controller");
+    wire_ = display_ ? display_->bus() : (transport ? std::shared_ptr<TwoWire>(std::move(transport)) :
+                                                    std::make_shared<LinuxWire>(device));
+    for (const auto& cal : calibration) addresses_.push_back(cal.address);
     // Claim the singleton SH-2 session before any motor writes.
     imu_ = std::make_unique<LinuxBno08x>(*wire_, imu_address, imu_report_interval_ms);
     kicker_ = std::move(kicker_output);
     if (!kicker_ && kicker_pin >= 0)
         kicker_ = std::make_unique<LinuxKickerOutput>(kicker_pin, kicker_gpiochip);
     motors_.reserve(calibration.size());
+    std::string init_source = "MOTOR";
+    int init_address = -1;
     try {
+        std::unique_lock<std::mutex> bus_lock(wire_->mutex);
         // Register all requested motors before any I/O so failure cleanup attempts all of them.
         for (const auto& cal : calibration) {
             motors_.emplace_back();
@@ -119,6 +129,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         }
         for (size_t i = 0; i < 4; ++i) {
             auto& motor = motors_[i];
+            init_address = calibration[i].address;
             if (motor.getFirmwareVersion() != 3)
                 throw MotorCommunicationError("Unsupported motor firmware at address " +
                                               std::to_string(calibration[i].address) + "; expected 3");
@@ -139,6 +150,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         }
         if (motors_.size() == 5) {
             auto& motor = motors_[4];
+            init_address = calibration[4].address;
             if (motor.getFirmwareVersion() != 3)
                 throw MotorCommunicationError("Unsupported motor firmware at address " +
                                               std::to_string(calibration[4].address) + "; expected 3");
@@ -156,7 +168,13 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
             motor.setSINCOSCENTRE(calibration[4].sincoscentre);
             motor.configureCommandMode(2);
         }
+        if (display_) display_->component("MOTOR", '+');
+        init_source = "IMU";
+        init_address = -1;
         imu_->initialize();
+        bus_lock.unlock();
+        imu_ready_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        init_source = "OTHER";
         running_ = true;
         imu_thread_ = std::thread(&HardwareController::imu_loop, this);
         if (kicker_) kicker_thread_ = std::thread(&HardwareController::kicker_loop, this);
@@ -169,6 +187,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         wake_.notify_all();
         if (kicker_thread_.joinable()) kicker_thread_.join();
         if (imu_thread_.joinable()) imu_thread_.join();
+        std::lock_guard<std::mutex> bus_lock(wire_->mutex);
         imu_->close();
         auto cleanup = disable_motors();
         if (kicker_) {
@@ -176,15 +195,51 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
                 cleanup += "; kicker shutdown: " + std::string(error.what());
             }
         }
-        throw MotorCommunicationError(std::string(exc.what()) +
-                                      (cleanup.empty() ? "" : "; shutdown: " + cleanup));
+        const auto message = init_source + (init_address >= 0 ? " " + std::to_string(init_address) : "") +
+                             ": " + exc.what() + (cleanup.empty() ? "" : "; shutdown: " + cleanup);
+        if (display_) display_->component(init_source, '!', message);
+        if (init_source == "MOTOR") throw MotorCommunicationError(message);
+        throw std::runtime_error(message);
     }
 }
 HardwareController::~HardwareController() {
     try { stop(); } catch (...) { /* Explicit stop reports failures; destructors cannot throw. */ }
 }
+
+void HardwareController::motor_operation(size_t index, const std::function<void()>& operation) {
+    try { operation(); } catch (const std::exception& exc) {
+        const auto message = "Motor " + std::to_string(addresses_[index]) + ": " + exc.what();
+        fail(message, "MOTOR", addresses_[index]);
+        throw MotorCommunicationError(message);
+    }
+}
+void HardwareController::check_imu_locked() {
+    const auto sample = imu_->snapshot();
+    const bool fresh = sample.raw_yaw.has_value() && sample.gyro_z.has_value();
+    if (fresh) imu_seen_ = true;
+    const bool unavailable = !fresh && (imu_seen_ || std::chrono::steady_clock::now() >= imu_ready_deadline_);
+    const bool new_outage = unavailable && !imu_unavailable_;
+    if (new_outage) {
+        ++imu_recovery_generation_;
+        std::fprintf(stderr, "IMU unavailable\n");
+    }
+    if (display_ && (fresh != last_imu_fresh_ || new_outage))
+        display_->component("IMU", fresh ? '+' : '!', unavailable ? "DISCONNECTED" : "");
+    last_imu_fresh_ = fresh;
+    imu_unavailable_ = unavailable;
+}
+HardwareHealth HardwareController::health() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const auto sample = imu_->snapshot();
+    return {sample.raw_yaw.has_value() && sample.gyro_z.has_value(),
+            fault_source_, error_, fault_address_, imu_recovery_generation_};
+}
+
 void HardwareController::check_state() const {
-    if (!error_.empty()) throw MotorCommunicationError(error_);
+    if (!error_.empty()) {
+        if (fault_source_ == "MOTOR") throw MotorCommunicationError(error_);
+        throw std::runtime_error(error_);
+    }
     if (!running_) throw std::runtime_error("HardwareController is stopped; create a new controller");
 }
 void HardwareController::move(double direction, double speed, double rotation,
@@ -202,10 +257,17 @@ void HardwareController::move(double direction, double speed, double rotation,
                0, dribbler, accepted_kick};
     if (accepted_kick) wake_.notify_all();
 }
-void HardwareController::fail(const std::string& message) {
+void HardwareController::fail(const std::string& message, const std::string& source, int address) {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!error_.empty()) error_ += "; ";
-    error_ += message;
+    if (error_.find(message) == std::string::npos) {
+        if (!error_.empty()) error_ += "; ";
+        error_ += message;
+    }
+    if (fault_source_.empty()) { fault_source_ = source; fault_address_ = address; }
+    if (display_) {
+        display_->component(source, '!', message);
+        display_->set_native_blocked(true);
+    }
     running_ = false;
     wake_.notify_all();
 }
@@ -219,7 +281,7 @@ void HardwareController::set_drive_current_limits(double constant_speed_amps, do
 }
 std::pair<double, double> HardwareController::get_measured_body_velocity_mm_s(double yaw_deg) {
     finite(yaw_deg); // Kept for compatibility; body-frame inversion does not need yaw.
-    std::lock_guard<std::mutex> bus_lock(bus_mutex_);
+    std::lock_guard<std::mutex> bus_lock(wire_->mutex);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         check_state();
@@ -227,7 +289,7 @@ std::pair<double, double> HardwareController::get_measured_body_velocity_mm_s(do
     try {
         std::array<double, 4> rpms;
         for (size_t i = 0; i < rpms.size(); ++i) {
-            motors_[i].updateQuickDataReadout();
+            motor_operation(i, [&] { motors_[i].updateQuickDataReadout(); });
             rpms[i] = motors_[i].getSpeedQDR() / RPM_TO_MOTOR_SPEED;
         }
         return body_velocity(rpms, config_.diameter);
@@ -242,7 +304,7 @@ std::string HardwareController::disable_motors() {
         auto attempt = [&](auto operation) {
             try { operation(); } catch (const std::exception& exc) {
                 if (!errors.empty()) errors += "; ";
-                errors += "motor " + std::to_string(i) + ": " + exc.what();
+                errors += "motor " + std::to_string(addresses_[i]) + ": " + exc.what();
             }
         };
         auto& motor = motors_[i];
@@ -269,7 +331,7 @@ void HardwareController::stop() {
     }
     if (thread_.joinable()) thread_.join();
     if (imu_thread_.joinable()) imu_thread_.join();
-    std::lock_guard<std::mutex> bus_lock(bus_mutex_);
+    std::lock_guard<std::mutex> bus_lock(wire_->mutex);
     imu_->close();
     const auto errors = disable_motors();
     {
@@ -277,9 +339,10 @@ void HardwareController::stop() {
         dx_ = dy_ = 0;
         target_ = {};
     }
-    if (!errors.empty() || !kicker_errors.empty())
-        throw MotorCommunicationError("Hardware shutdown failed: " + errors +
-                                      (kicker_errors.empty() ? "" : "; kicker: " + kicker_errors));
+    if (!errors.empty()) fail("Motor shutdown failed: " + errors, "MOTOR");
+    if (!kicker_errors.empty()) fail("Kicker shutdown failed: " + kicker_errors, "OTHER");
+    if (!errors.empty()) throw MotorCommunicationError("Hardware shutdown failed: " + errors);
+    if (!kicker_errors.empty()) throw std::runtime_error("Kicker shutdown failed: " + kicker_errors);
 }
 double HardwareController::current_speed() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -292,14 +355,14 @@ double HardwareController::current_direction() const {
 void HardwareController::imu_loop() noexcept {
     while (running_) {
         try {
-            std::lock_guard<std::mutex> bus_lock(bus_mutex_);
+            std::lock_guard<std::mutex> bus_lock(wire_->mutex);
             if (!running_) break;
             imu_->service();
         } catch (const std::exception&) {
-            // Runtime IMU outages age the cached samples. Drive translation continues,
-            // and heading correction resumes automatically once fresh yaw arrives.
+            // Report freshness to main.py; the game loop owns the pause policy.
         }
         std::unique_lock<std::mutex> lock(state_mutex_);
+        check_imu_locked();
         wake_.wait_for(lock, std::chrono::milliseconds(2), [&] { return !running_; });
     }
 }
@@ -323,11 +386,11 @@ void HardwareController::kicker_loop() noexcept {
             kicking_ = false;
         }
     } catch (const std::exception& exc) {
-        fail("Kicker GPIO failed: " + std::string(exc.what()));
+        fail("Kicker GPIO failed: " + std::string(exc.what()), "OTHER");
     }
     // Also attempted after high()/idle() failures and on shutdown during a pulse.
     try { kicker_->idle(); } catch (const std::exception& exc) {
-        fail("Kicker shutdown failed: " + std::string(exc.what()));
+        fail("Kicker shutdown failed: " + std::string(exc.what()), "OTHER");
     }
     std::lock_guard<std::mutex> lock(state_mutex_);
     kicking_ = false;
@@ -381,7 +444,7 @@ void HardwareController::drive_loop() noexcept {
                 command.speed = std::hypot(dx_, dy_);
             }
             // Acquire lock on i2c bus
-            std::lock_guard<std::mutex> bus_lock(bus_mutex_);
+            std::lock_guard<std::mutex> bus_lock(wire_->mutex);
             if (!running_) break;
             // Read after acquiring the bus: an IMU operation may have delayed this tick.
             const auto imu = imu_->snapshot();
@@ -395,23 +458,23 @@ void HardwareController::drive_loop() noexcept {
             const auto current_limit = accelerating ? accelerating_current : steady_current;
             if (current_limit != applied_current_limit) {
                 for (size_t i = 0; i < rpms.size(); ++i)
-                    motors_[i].setCurrentLimitFOC(current_limit);
+                    motor_operation(i, [&] { motors_[i].setCurrentLimitFOC(current_limit); });
                 applied_current_limit = current_limit;
             }
             previous_rpms = rpms;
             // Send motor commands
             for (size_t i = 0; i < rpms.size(); ++i)
-                motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED));
+                motor_operation(i, [&] { motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED)); });
             // Spin the dribbler, if configured
             if (motors_.size() > 4)
-                motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_);
+                motor_operation(4, [&] { motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_); });
             ++loop_count_;
         }
     } catch (const std::exception& exc) {
         fail(exc.what());
     }
     // Disable motors after shutdown
-    std::lock_guard<std::mutex> bus_lock(bus_mutex_);
+    std::lock_guard<std::mutex> bus_lock(wire_->mutex);
     const auto errors = disable_motors();
     if (!errors.empty()) fail("Motor shutdown failed: " + errors);
 }
