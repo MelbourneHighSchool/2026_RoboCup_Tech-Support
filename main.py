@@ -37,6 +37,7 @@ YAW_CORRECT_THRESHOLD = 3 # deg; threshold of allowable yaw error.
 CAMERA_PORT = 8000 # Port used for streaming the camera feed for debugging.
 CAMERA_RESOLUTION = (640, 640)
 CAMERA_FPS = 90
+ENABLE_GOAL_DETECTION = True  # False skips goal contours and always reports lined_up=True.
 # Camera-detected bots within this distance of self or the UDP teammate are
 # treated as self/friendly rather than enemies.
 CAMERA_BOT_MATCH_MM = 100
@@ -353,6 +354,7 @@ try:
         CAMERA_PORT,
         resolution=CAMERA_RESOLUTION,
         frame_rate=CAMERA_FPS,
+        enable_goal_detection=ENABLE_GOAL_DETECTION,
         recording_path=(
             recording_session.video_path if recording_session is not None else None
         ),
@@ -434,7 +436,7 @@ try:
                 last_pose_time = time.monotonic()
             elif SWITCHM == 2:
                 run = True
-        if SWITCHM == 2 and not pause_switch.read():
+        if USE_PAUSE and SWITCHM == 2 and not pause_switch.read():
             run = False
         if was_run and not run:
             paused_yaw_sampler.reset()

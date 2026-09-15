@@ -316,6 +316,11 @@ def goalie(
     if kick == True:
         dribbler = -1
 
+    # Holding/turning branches do not select a translation heading.
+    # The native controller requires a numeric heading even at zero speed.
+    if direction is None:
+        direction = 0
+        speed = 0
     direction, speed = keep_motion_inside_white_lines(
         x_pos, y_pos, direction, speed
     )

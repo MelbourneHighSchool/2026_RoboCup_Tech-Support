@@ -94,12 +94,14 @@ class Camera:
         detection_callback=None,
         diagnostics=False,
         bot_distance_calibration_file=DEFAULT_BOT_DISTANCE_CALIBRATION_FILE,
+        enable_goal_detection=True,
     ):
         self.ball_model_path = _resolve_model_path(ball_model_path)
         self.diagnostics_enabled = diagnostics
         self._diagnostic_snapshot = None
         self.inference_error = None
-        self.goal_detector = OpenCV()
+        self.enable_goal_detection = enable_goal_detection
+        self.goal_detector = OpenCV() if enable_goal_detection else None
         self.ball_confidence = ball_confidence
         self.ball_model = None
         self.picam2 = None
@@ -139,7 +141,7 @@ class Camera:
             self._bearing = None
             self._distance = None
             self._bot_measurements = []
-            self._lined_up = False
+            self._lined_up = not enable_goal_detection
             self._frame_id = 0
             self._measurement_lock = threading.Lock()
             self._capture_started = False
@@ -494,11 +496,14 @@ class Camera:
                     continue
                 bot_measurements.append((bot_bearing, bot_distance))
 
-            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            cv = getattr(self, "goal_detector", None) or OpenCV()
-            contours = cv.process_image(hsv_frame, True)
-            yellow_contours = cv.process_image(hsv_frame, False)
-            lined_up = _goal_lined_up(contours, frame_w, frame_h)
+            if getattr(self, "enable_goal_detection", True):
+                hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                cv = getattr(self, "goal_detector", None) or OpenCV()
+                contours = cv.process_image(hsv_frame, True)
+                yellow_contours = cv.process_image(hsv_frame, False)
+                lined_up = _goal_lined_up(contours, frame_w, frame_h)
+            else:
+                contours, yellow_contours, lined_up = [], [], True
 
             with self._measurement_lock:
                 self._last_detection = detection

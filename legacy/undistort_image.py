@@ -10,7 +10,7 @@ CALIBRATION_FILE = SCRIPT_DIR / "calibration_data.npz"
 
 # Check if filename argument was provided
 if len(sys.argv) < 2:
-    print("Usage: python undistortImage.py <FILE_NAME>")
+    print("Usage: python undistort_image.py <FILE_NAME>")
     sys.exit(1)
 
 input_filename = sys.argv[1]
@@ -51,5 +51,5 @@ if CALIBRATION_FILE.exists():
     print(f"Undistorted image saved to '{output_filename}'")
 else:
     print(f"Error: Calibration file '{CALIBRATION_FILE}' not found.")
-    print("Please run findChessCorners.py first to generate calibration data.")
+    print("Please run find_chess_corners.py first to generate calibration data.")
     sys.exit(1)

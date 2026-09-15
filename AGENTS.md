@@ -265,3 +265,9 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 **Problem:** In Pi reverse runs, wheel travel exceeded physical travel while recovery did not trigger. Stationary diffusion of 8 mm/sqrt(s) does not represent that moving uncertainty.
 
 **Solution:** Translation noise per axis is `hypot(8, coefficient * measured_speed) * sqrt(dt)`, with coefficient 0.30 sqrt(s) initially; wheel velocity remains the mean. Noise is added only on prediction, not scan replay. `lidar.set_motion_noise(0)` restores legacy noise for timestamp-only comparisons; `python -m tests.localisation --motion-noise 0` exposes this option (default 0.30). The coefficient needs Pi validation. Offline checks: `.venv/bin/python -m unittest tests.test_localisation_motion`.
+
+## Goalie commands while holding or turning
+
+**Problem:** `goalie()` left `direction=None` and the default speed of 700 when holding a captured ball or turning toward a ball behind it. Passing that command to native `HardwareController.move()` raises `TypeError` because its heading must be numeric.
+
+**Solution:** Before returning a goalie command, convert an unset translation direction to direction 0 and speed 0, preserving rotation, dribbler, and kick. Setting only direction to 0 would cause unintended forward motion. Regression checks: `.venv/bin/python -m unittest tests.test_goalie_commands`.

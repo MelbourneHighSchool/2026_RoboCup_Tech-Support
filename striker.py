@@ -34,7 +34,7 @@ BALL_HIDING_LINE_THRESHOLD = 150
 # Set to False to disable the ball-hiding strategy.
 BALL_HIDING_ENABLED = True
 # Distance to goal (mm) at which ball hiding starts / ends.
-BALL_HIDING_START_DIST = 1000
+BALL_HIDING_START_DIST = 900
 BALL_HIDING_END_DIST = 600
 # Distance to goal (mm) at which to aim and shoot when ball hiding is disabled.
 BALL_HIDING_DISABLED_END_DIST = 1000
@@ -279,15 +279,16 @@ def striker(
     rotation = 0 # Sets the desired rotation. 0 is always the startup/ideal heading in this frame.
     speed = 500 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
+    dribbler = 1 # Dribbler should be on by default
     # Skip approach offset while captured: ball is in front, so direction ≈ yaw and
     # ±80 would clear goal rotation and oscillate against facing forward (rotation=0).
     if not ball_captured and dist < 300:
         if -10 < direction < 10:
-            speed = 1000
+            speed = 700
         elif 0 < direction < 180:
-            offset = 80
+            offset = 70
         else:
-            offset = -80
+            offset = -70
     elif dist > 500:
         speed = 1200
         dribbler = 0
@@ -296,7 +297,6 @@ def striker(
 
     # By default, the bot should not kick the ball.
     kick = False
-    dribbler = 1 # Whether the dribbler should be on.
 
     # steering_state persists ball-hiding across calls (hysteresis between START/END).
     ball_hiding = (
@@ -359,8 +359,7 @@ def striker(
             speed = 0
             rotation = degrees_to_goal
             if (
-                abs(wrap_angle_deg(yaw - degrees_to_goal)) <= YAW_CORRECT_THRESHOLD
-                and kick_direction_scores(
+                kick_direction_scores(
                     ball_x,
                     ball_y,
                     yaw,
