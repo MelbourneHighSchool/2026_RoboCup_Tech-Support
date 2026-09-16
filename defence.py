@@ -238,6 +238,12 @@ def goalie(
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
     rotation = 0
     angle_to_ball %= 360
+    ball_out = is_ball_out(ball_x, ball_y)
+    if not ball_captured and not ball_out and ball_x < x_pos:
+        # Position corrections must not cancel a turn toward a ball behind the
+        # goalie. Otherwise crossing a Y limit alternates the target between
+        # the ball and zero, making the goalie reverse its turn every cycle.
+        rotation = angle_to_ball
     speed = 700
     kick = False
 
@@ -266,7 +272,7 @@ def goalie(
     elif x_pos > 600 and not ball_captured:
         direction = 180
     else:
-        if is_ball_out(ball_x, ball_y):
+        if ball_out:
             if abs(y_pos - 910) > 5:
                 if y_pos < 910:
                     direction = 90
@@ -277,7 +283,6 @@ def goalie(
                 speed = 0
         elif ball_x < x_pos:
             y_diff = ball_y - y_pos
-            rotation = angle_to_ball
             if abs(y_diff) > 10:
                 direction = math.degrees(math.atan2(y_diff, 0))
                 distance_to_target = abs(y_diff)

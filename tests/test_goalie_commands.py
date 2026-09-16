@@ -31,3 +31,15 @@ class GoalieCommandTests(unittest.TestCase):
         direction, speed, *_ = goalie(550, 910, 180, 450, 910)
         self.assertEqual(direction, 180)
         self.assertEqual(speed, 200)
+
+    def test_boundary_correction_does_not_cancel_turn_to_ball_behind(self):
+        direction, speed, rotation, *_ = goalie(
+            525, 1361, 80, 400, 1500
+        )
+
+        self.assertAlmostEqual(direction, -90)
+        self.assertEqual(speed, 700)
+        self.assertAlmostEqual(
+            rotation,
+            math.degrees(math.atan2(1500 - 1361, 400 - 525)) % 360,
+        )
