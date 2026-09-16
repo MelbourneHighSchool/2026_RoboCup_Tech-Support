@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from defence import goalie
+from defence import GOALIE_BOX_Y_MAX, GOALIE_BOX_Y_MIN, goalie
 
 
 class GoalieCommandTests(unittest.TestCase):
@@ -43,3 +43,38 @@ class GoalieCommandTests(unittest.TestCase):
             rotation,
             math.degrees(math.atan2(1500 - 1361, 400 - 525)) % 360,
         )
+
+    def test_chases_outside_ball_only_as_far_as_top_box_line(self):
+        direction, speed, rotation, *_ = goalie(
+            525, GOALIE_BOX_Y_MAX - 20, 80, 400, 1700
+        )
+
+        self.assertAlmostEqual(direction, 90)
+        self.assertEqual(speed, 130)
+        self.assertAlmostEqual(
+            rotation,
+            math.degrees(
+                math.atan2(1700 - (GOALIE_BOX_Y_MAX - 20), 400 - 525)
+            ) % 360,
+        )
+
+        _, speed_at_line, rotation_at_line, *_ = goalie(
+            525, GOALIE_BOX_Y_MAX, 80, 400, 1700
+        )
+        self.assertEqual(speed_at_line, 0)
+        self.assertNotEqual(rotation_at_line, 0)
+
+    def test_chases_outside_ball_only_as_far_as_bottom_box_line(self):
+        direction, speed, rotation, *_ = goalie(
+            525, GOALIE_BOX_Y_MIN + 20, 280, 400, 100
+        )
+
+        self.assertAlmostEqual(direction, -90)
+        self.assertEqual(speed, 130)
+        self.assertNotEqual(rotation, 0)
+
+        _, speed_at_line, rotation_at_line, *_ = goalie(
+            525, GOALIE_BOX_Y_MIN, 280, 400, 100
+        )
+        self.assertEqual(speed_at_line, 0)
+        self.assertNotEqual(rotation_at_line, 0)

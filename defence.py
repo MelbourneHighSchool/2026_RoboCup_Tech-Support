@@ -2,6 +2,8 @@ import math
 
 # Goalie's home X position, kept safely in front of the back wall.
 GOALIE_HOME_X = 500
+GOALIE_BOX_Y_MIN = 460
+GOALIE_BOX_Y_MAX = 1360
 YELLOW_GOAL_CENTRE_X = 1980
 # Y is shared between goals because it is the same
 GOAL_CENTRE_Y = 910
@@ -238,8 +240,7 @@ def goalie(
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
     rotation = 0
     angle_to_ball %= 360
-    ball_out = is_ball_out(ball_x, ball_y)
-    if not ball_captured and not ball_out and ball_x < x_pos:
+    if not ball_captured and ball_x < x_pos:
         # Position corrections must not cancel a turn toward a ball behind the
         # goalie. Otherwise crossing a Y limit alternates the target between
         # the ball and zero, making the goalie reverse its turn every cycle.
@@ -263,35 +264,33 @@ def goalie(
                     kick = False
         else:
             dribbler = 1
-    elif y_pos > 1360:
+    elif y_pos > GOALIE_BOX_Y_MAX:
         direction = 270
-    elif y_pos < 460:
+    elif y_pos < GOALIE_BOX_Y_MIN:
         direction = 90
     elif x_pos < 520 and not 90 < yaw < 270:
         direction = 0
     elif x_pos > 600 and not ball_captured:
         direction = 180
     else:
-        if ball_out:
-            if abs(y_pos - 910) > 5:
-                if y_pos < 910:
-                    direction = 90
-                else:
-                    direction = 270
-            else:
-                direction = yaw
-                speed = 0
-        elif ball_x < x_pos:
-            y_diff = ball_y - y_pos
+        if ball_x < x_pos:
+            target_y = max(GOALIE_BOX_Y_MIN, min(ball_y, GOALIE_BOX_Y_MAX))
+            y_diff = target_y - y_pos
             if abs(y_diff) > 10:
                 direction = math.degrees(math.atan2(y_diff, 0))
                 distance_to_target = abs(y_diff)
                 speed = min(speed, distance_to_target * 4 + 50)
             else:
-                dribbler = 1
-                if abs(yaw - rotation) < 5:
+                if GOALIE_BOX_Y_MIN <= ball_y <= GOALIE_BOX_Y_MAX:
+                    dribbler = 1
+                if (
+                    GOALIE_BOX_Y_MIN <= ball_y <= GOALIE_BOX_Y_MAX
+                    and abs(wrap_angle_deg(yaw - rotation)) < 5
+                ):
                     direction = angle_to_ball
                     speed = 200
+                else:
+                    speed = 0
         else:
             goal_dx = YELLOW_GOAL_BACK_X - ball_x
             goal_dy = GOAL_CENTRE_Y - ball_y
@@ -310,6 +309,10 @@ def goalie(
                 if abs(goal_dx) > epsilon:
                     t = (intercept_x - ball_x) / goal_dx
                     intercept_y = ball_y + t * goal_dy
+
+            intercept_y = max(
+                GOALIE_BOX_Y_MIN, min(intercept_y, GOALIE_BOX_Y_MAX)
+            )
 
             dif_x = intercept_x - x_pos
             dif_y = intercept_y - y_pos
