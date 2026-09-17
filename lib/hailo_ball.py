@@ -48,10 +48,21 @@ def letterbox(
 
 def _load_metadata(model_dir: Path) -> dict:
     meta_path = model_dir / "metadata.yaml"
+    defaults = {"names": DEFAULT_CLASS_NAMES, "imgsz": 640, "task": "detect"}
     if not meta_path.is_file():
-        return {"names": DEFAULT_CLASS_NAMES, "imgsz": 640, "task": "detect"}
-    with meta_path.open(encoding="utf-8") as handle:
-        meta = yaml.safe_load(handle) or {}
+        return defaults
+    # Some deployment/copy workflows leave the YAML document serialized as a
+    # quoted string. Decode that once more, and treat other scalar documents as
+    # absent metadata instead of failing during camera startup.
+    try:
+        with meta_path.open(encoding="utf-8") as handle:
+            meta = yaml.safe_load(handle) or {}
+        if isinstance(meta, str):
+            meta = yaml.safe_load(meta) or {}
+    except (OSError, yaml.YAMLError):
+        return defaults
+    if not isinstance(meta, dict):
+        return defaults
     names = meta.get("names") or DEFAULT_CLASS_NAMES
     if isinstance(names, list):
         names = {i: name for i, name in enumerate(names)}

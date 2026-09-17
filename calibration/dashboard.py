@@ -38,12 +38,16 @@ def discover_models(root):
             import yaml
 
             metadata = yaml.safe_load((path / "metadata.yaml").read_text(encoding="utf-8")) or {}
+            if isinstance(metadata, str):
+                metadata = yaml.safe_load(metadata) or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
             size = metadata.get("imgsz")
             if isinstance(size, int):
                 input_size = [size, size]
             elif isinstance(size, list) and len(size) == 2:
                 input_size = [int(size[0]), int(size[1])]
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError, yaml.YAMLError):
             pass
         models.append({
             "id": model_id,

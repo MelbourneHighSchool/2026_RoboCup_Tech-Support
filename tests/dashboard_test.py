@@ -25,6 +25,7 @@ from calibration.dashboard import (
 )
 from calibration.dashboard_hardware import Hardware, target_command
 from calibration_dashboard import DashboardServer
+from lib.hailo_ball import DEFAULT_CLASS_NAMES, _load_metadata
 from lib.localisation_service import (
     LidarVelocityEstimator,
     LocalisationSession,
@@ -779,6 +780,32 @@ def test_model_discovery_and_live_switch_restart_only_camera(tmp_path):
             app._edit("select_model", {"model": "m"})
     finally:
         app.close()
+
+
+def test_model_metadata_accepts_serialized_yaml_and_ignores_scalars(tmp_path):
+    serialized = tmp_path / "open-soccer-detect-n_hailo_model"
+    serialized.mkdir()
+    (serialized / "model.hef").write_bytes(b"compiled")
+    (serialized / "metadata.yaml").write_text(
+        json.dumps("imgsz: [736, 736]\nnames: {0: Ball, 1: Bot}\n")
+    )
+
+    scalar = tmp_path / "open-soccer-detect-s_hailo_model"
+    scalar.mkdir()
+    (scalar / "model.hef").write_bytes(b"compiled")
+    (scalar / "metadata.yaml").write_text("metadata unavailable\n")
+
+    models = discover_models(tmp_path)
+    assert [(model["id"], model["input_size"]) for model in models] == [
+        ("n", [736, 736]),
+        ("s", None),
+    ]
+    assert _load_metadata(serialized)["imgsz"] == [736, 736]
+    assert _load_metadata(scalar) == {
+        "names": DEFAULT_CLASS_NAMES,
+        "imgsz": 640,
+        "task": "detect",
+    }
 
 
 def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):
