@@ -1,89 +1,50 @@
 import math
 import unittest
 
-from defence import GOALIE_BOX_Y_MAX, GOALIE_BOX_Y_MIN, goalie
+from defence import GOALIE_BLOCK_X, goalie
 
 
 class GoalieCommandTests(unittest.TestCase):
-    def test_turn_to_ball_behind_without_translation(self):
-        direction, speed, rotation, kick, dribbler = goalie(
-            550, 910, 90, 450, 912.6
-        )
-        self.assertTrue(math.isfinite(direction))
-        self.assertEqual(speed, 0)
-        self.assertAlmostEqual(rotation, 178.510645, places=5)
-        self.assertFalse(kick)
-        self.assertEqual(dribbler, 1)
+    def test_tracks_up_and_down_without_leaving_line(self):
+        for ball_y, sign in [(1200, 1), (600, -1)]:
+            direction, speed, *_ = goalie(GOALIE_BLOCK_X, 910, 0, 1000, ball_y)
+            self.assertAlmostEqual(speed * math.cos(math.radians(direction)), 0)
+            self.assertGreater(sign * speed * math.sin(math.radians(direction)), 0)
 
-    def test_captured_ball_holds_position_while_aiming_or_kicking(self):
-        for yaw, expected_kick, expected_dribbler in [(90, False, 1), (0, True, -1)]:
-            with self.subTest(yaw=yaw):
-                direction, speed, rotation, kick, dribbler = goalie(
-                    550, 910, yaw, 560, 910, ball_captured=True
-                )
-                self.assertTrue(math.isfinite(direction))
-                self.assertEqual(speed, 0)
-                self.assertEqual(rotation, 0)
-                self.assertEqual(kick, expected_kick)
-                self.assertEqual(dribbler, expected_dribbler)
+    def test_corrects_displacement_from_line(self):
+        for x, sign in [(450, 1), (650, -1)]:
+            direction, speed, *_ = goalie(x, 910, 0, 1800, 910)
+            self.assertGreater(sign * speed * math.cos(math.radians(direction)), 0)
+            self.assertAlmostEqual(speed * math.sin(math.radians(direction)), 0)
 
-    def test_aligned_with_ball_behind_still_approaches(self):
-        direction, speed, *_ = goalie(550, 910, 180, 450, 910)
-        self.assertEqual(direction, 180)
-        self.assertEqual(speed, 200)
+    def test_stops_at_target_and_slows_when_near(self):
+        self.assertEqual(goalie(GOALIE_BLOCK_X, 910, 0, 1800, 910)[1], 0)
+        self.assertEqual(goalie(GOALIE_BLOCK_X, 930, 0, 1800, 910)[1], 60)
+        self.assertEqual(goalie(GOALIE_BLOCK_X, 1200, 0, 1800, 910)[1], 700)
 
-    def test_faces_uncaptured_ball_in_front(self):
-        _, _, rotation, kick, _ = goalie(550, 910, 0, 1000, 1200)
+    def test_tracks_through_centre_without_intermediate_home_target(self):
+        for y in (800, 890, 910, 930):
+            direction, speed, *_ = goalie(GOALIE_BLOCK_X, y, 0, 1000, 1250)
+            self.assertAlmostEqual(direction, 90)
+            self.assertGreater(speed, 0)
 
-        self.assertAlmostEqual(
-            rotation,
-            math.degrees(math.atan2(1200 - 910, 1000 - 550)) % 360,
-        )
-        self.assertFalse(kick)
+    def test_missing_ball_uses_centre_on_same_line(self):
+        self.assertEqual(goalie(GOALIE_BLOCK_X, 910, 90, None, None), (0, 0, 0, False, 0))
+        direction, speed, *_ = goalie(650, 910, 0, None, None)
+        self.assertAlmostEqual(direction, 180)
+        self.assertGreater(speed, 0)
 
-    def test_boundary_correction_does_not_cancel_turn_to_ball_behind(self):
-        direction, speed, rotation, *_ = goalie(
-            525, 1361, 80, 400, 1500
-        )
+    def test_limits_sideways_travel(self):
+        for y, ball_y in [(1360, 1700), (460, 100)]:
+            command = goalie(GOALIE_BLOCK_X, y, 0, 400, ball_y)
+            self.assertEqual(command[1], 0)
 
-        self.assertAlmostEqual(direction, -90)
-        self.assertEqual(speed, 700)
-        self.assertAlmostEqual(
-            rotation,
-            math.degrees(math.atan2(1500 - 1361, 400 - 525)) % 360,
-        )
+    def test_nearby_or_captured_ball_never_triggers_collection_or_kick(self):
+        for captured in (False, True):
+            command = goalie(GOALIE_BLOCK_X, 910, 0, 600, 910, ball_captured=captured)
+            self.assertEqual(command[1:], (0, 0, False, 0))
+            self.assertTrue(all(math.isfinite(value) for value in command))
 
-    def test_chases_outside_ball_only_as_far_as_top_box_line(self):
-        direction, speed, rotation, *_ = goalie(
-            525, GOALIE_BOX_Y_MAX - 20, 80, 400, 1700
-        )
 
-        self.assertAlmostEqual(direction, 90)
-        self.assertEqual(speed, 130)
-        self.assertAlmostEqual(
-            rotation,
-            math.degrees(
-                math.atan2(1700 - (GOALIE_BOX_Y_MAX - 20), 400 - 525)
-            ) % 360,
-        )
-
-        _, speed_at_line, rotation_at_line, *_ = goalie(
-            525, GOALIE_BOX_Y_MAX, 80, 400, 1700
-        )
-        self.assertEqual(speed_at_line, 0)
-        self.assertNotEqual(rotation_at_line, 0)
-
-    def test_chases_outside_ball_only_as_far_as_bottom_box_line(self):
-        direction, speed, rotation, *_ = goalie(
-            525, GOALIE_BOX_Y_MIN + 20, 280, 400, 100
-        )
-
-        self.assertAlmostEqual(direction, -90)
-        self.assertEqual(speed, 130)
-        self.assertNotEqual(rotation, 0)
-
-        _, speed_at_line, rotation_at_line, *_ = goalie(
-            525, GOALIE_BOX_Y_MIN, 280, 400, 100
-        )
-        self.assertEqual(speed_at_line, 0)
-        self.assertNotEqual(rotation_at_line, 0)
+if __name__ == "__main__":
+    unittest.main()

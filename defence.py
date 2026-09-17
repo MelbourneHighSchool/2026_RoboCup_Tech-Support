@@ -1,7 +1,10 @@
 import math
 
-# Goalie's home X position, kept safely in front of the back wall.
-GOALIE_HOME_X = 500
+# Goalie tracks along this fixed X line, with bounded sideways travel.
+GOALIE_BLOCK_X = 530
+GOALIE_MAX_SPEED = 2000
+GOALIE_POSITION_GAIN = 0.02
+GOALIE_STOP_DISTANCE = 10
 GOALIE_BOX_Y_MIN = 460
 GOALIE_BOX_Y_MAX = 1360
 YELLOW_GOAL_CENTRE_X = 1980
@@ -192,20 +195,6 @@ def defence(
     )
     return direction, speed, rotation, steering, kick, dribbler
 
-# Inputs: 
-# x_pos: x position of the robot
-# y_pos: y position of the robot
-# yaw: yaw value of the robot
-# ball_x: x position of the ball
-# ball_y: y position of the ball
-# ball_captured: True when the ball is touching the capture zone
-# friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
-# enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
-# Outputs: direction, speed, rotation
-# direction: degrees to move in
-# speed: mm/s to move at
-# rotation: yaw value to rotate towards
-# kick: True if the bot wants to kick the ball
 def goalie(
     x_pos,
     y_pos,
@@ -217,119 +206,25 @@ def goalie(
     enemy_bot_positions=None,
     lined_up=False,
 ):
-    dribbler = 0 # Whether the dribbler should be on.
-    if friendly_bot_positions is None:
-        friendly_bot_positions = []
-    if enemy_bot_positions is None:
-        enemy_bot_positions = []
-    if ball_x is None or ball_y is None:
-        target_x = GOALIE_HOME_X
-        target_y = GOAL_CENTRE_Y
-        vector = (target_x - x_pos), (target_y - y_pos)
-        direction = math.degrees(math.atan2(vector[1], vector[0]))
-        speed = 600
-        rotation = 0
-        kick = False
-        direction, speed = keep_motion_inside_white_lines(
-            x_pos, y_pos, direction, speed
-        )
-        return direction, speed, rotation, kick, dribbler
-    vector = (ball_x - x_pos), (ball_y - y_pos)
-    direction = None
-    # dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
-    angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
+    """Track the ball-to-goal line at fixed X; correct any displacement from it."""
+    target_y = GOAL_CENTRE_Y
     rotation = 0
-    angle_to_ball %= 360
-    if not ball_captured:
-        # Keep facing the ball while position corrections choose translation.
-        # Reset to the goal-facing heading only after capturing the ball so it
-        # can line up a kick.
-        rotation = angle_to_ball
-    speed = 700
+    if ball_x is not None and ball_y is not None:
+        if ball_x > GOALIE_BLOCK_X:
+            fraction = (GOALIE_BLOCK_X - YELLOW_GOAL_BACK_X) / (ball_x - YELLOW_GOAL_BACK_X)
+            target_y += fraction * (ball_y - GOAL_CENTRE_Y)
+        else:
+            target_y = ball_y
+        rotation = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos)) % 360
+
     kick = False
-
-    yaw %= 360
-    if yaw < 0:
-        yaw += 360
-
     if ball_captured:
-        if yaw < 20 or yaw > 340:
-            kick = True
-            yaw_rad = math.radians(yaw)
-            dir_x = math.cos(yaw_rad)
-            dir_y = math.sin(yaw_rad)
-            for bot in enemy_bot_positions:
-                along_kick = (bot[0] - x_pos) * dir_x + (bot[1] - y_pos) * dir_y
-                if abs(along_kick) < 200:
-                    kick = False
-        else:
-            dribbler = 1
-    elif y_pos > GOALIE_BOX_Y_MAX:
-        direction = 270
-    elif y_pos < GOALIE_BOX_Y_MIN:
-        direction = 90
-    elif x_pos < 520 and not 90 < yaw < 270:
-        direction = 0
-    elif x_pos > 600 and not ball_captured:
-        direction = 180
-    else:
-        if ball_x < x_pos:
-            target_y = max(GOALIE_BOX_Y_MIN, min(ball_y, GOALIE_BOX_Y_MAX))
-            y_diff = target_y - y_pos
-            if abs(y_diff) > 10:
-                direction = math.degrees(math.atan2(y_diff, 0))
-                distance_to_target = abs(y_diff)
-                speed = min(speed, distance_to_target * 4 + 50)
-            else:
-                if GOALIE_BOX_Y_MIN <= ball_y <= GOALIE_BOX_Y_MAX:
-                    dribbler = 1
-                if (
-                    GOALIE_BOX_Y_MIN <= ball_y <= GOALIE_BOX_Y_MAX
-                    and abs(wrap_angle_deg(yaw - rotation)) < 5
-                ):
-                    direction = angle_to_ball
-                    speed = 200
-                else:
-                    speed = 0
-        else:
-            goal_dx = YELLOW_GOAL_BACK_X - ball_x
-            goal_dy = GOAL_CENTRE_Y - ball_y
-            line_len_sq = goal_dx * goal_dx + goal_dy * goal_dy
-            epsilon = 1e-6
-            if line_len_sq < epsilon:
-                intercept_x = GOALIE_HOME_X
-                intercept_y = GOAL_CENTRE_Y
-            else:
-                t = ((x_pos - ball_x) * goal_dx + (y_pos - ball_y) * goal_dy) / line_len_sq
-                intercept_x = ball_x + t * goal_dx
-                intercept_y = ball_y + t * goal_dy
+        kick = True
 
-            if intercept_x < 530:
-                intercept_x = 530
-                if abs(goal_dx) > epsilon:
-                    t = (intercept_x - ball_x) / goal_dx
-                    intercept_y = ball_y + t * goal_dy
-
-            intercept_y = max(
-                GOALIE_BOX_Y_MIN, min(intercept_y, GOALIE_BOX_Y_MAX)
-            )
-
-            dif_x = intercept_x - x_pos
-            dif_y = intercept_y - y_pos
-            if math.hypot(dif_x, dif_y) < 10:
-                speed = 0
-            direction = math.degrees(math.atan2(dif_y, dif_x))
-            distance_to_target = math.hypot(dif_x, dif_y)
-            speed = min(speed, distance_to_target * 4)
-    if kick == True:
-        dribbler = -1
-
-    # Holding/turning branches do not select a translation heading.
-    # The native controller requires a numeric heading even at zero speed.
-    if direction is None:
-        direction = 0
-        speed = 0
-    direction, speed = keep_motion_inside_white_lines(
-        x_pos, y_pos, direction, speed
-    )
-    return direction, speed, rotation, kick, dribbler
+    target_y = max(GOALIE_BOX_Y_MIN, min(target_y, GOALIE_BOX_Y_MAX))
+    dx, dy = GOALIE_BLOCK_X - x_pos, target_y - y_pos
+    distance = math.hypot(dx, dy)
+    direction = math.degrees(math.atan2(dy, dx))
+    speed = min(GOALIE_MAX_SPEED, GOALIE_POSITION_GAIN * distance * distance) if distance > GOALIE_STOP_DISTANCE else 0
+    direction, speed = keep_motion_inside_white_lines(x_pos, y_pos, direction, speed)
+    return direction, speed, rotation, kick, 0
