@@ -298,6 +298,22 @@ std::pair<double, double> HardwareController::get_measured_body_velocity_mm_s(do
         throw MotorCommunicationError(exc.what());
     }
 }
+double HardwareController::get_dribbler_rpm() {
+    std::lock_guard<std::mutex> bus_lock(wire_->mutex);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        check_state();
+    }
+    if (motors_.size() < 5)
+        throw std::runtime_error("No dribbler motor is configured");
+    try {
+        motor_operation(4, [&] { motors_[4].updateQuickDataReadout(); });
+        return motors_[4].getSpeedQDR() / RPM_TO_MOTOR_SPEED;
+    } catch (const std::exception& exc) {
+        fail(exc.what());
+        throw MotorCommunicationError(exc.what());
+    }
+}
 std::string HardwareController::disable_motors() {
     std::string errors;
     for (size_t i = 0; i < motors_.size(); ++i) {

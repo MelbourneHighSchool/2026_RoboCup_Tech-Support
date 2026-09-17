@@ -16,7 +16,7 @@ from calibration.ball_distance import (
 )
 from lib.hailo_ball import HailoBallDetector
 
-MODEL_DIR = Path(__file__).resolve().parent / "open-soccer-detect-s_hailo_model"
+MODEL_DIR = Path(__file__).resolve().parents[1] / "open-soccer-detect-n_hailo_model"
 BALL_CONFIDENCE = 0.25
 PRINT_EVERY = 30
 DEFAULT_RESOLUTION = (640, 640)
@@ -275,7 +275,13 @@ def run_camera(conf: float) -> None:
 
             frame_height, frame_width = infer_frame.shape[:2]
             rgb_frame = cv2.cvtColor(infer_frame, cv2.COLOR_BGR2RGB)
-            detection = detector.best_ball(rgb_frame)
+            detections = detector.predict(rgb_frame)
+            ball_xyxy = _best_named(detections, detector.names_map, "Ball")
+            detection = (
+                _det_from_xyxy(ball_xyxy, frame_width, frame_height)
+                if ball_xyxy is not None
+                else None
+            )
             t2 = time.perf_counter()
 
             sum_grab_ms += (t1 - t0) * 1000.0

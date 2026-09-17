@@ -104,6 +104,8 @@ PYBIND11_MODULE(hardware_controller, module) {
         .def_property_readonly("imu_update_count", &HardwareController::imu_update_count)
         .def("get_measured_body_velocity_mm_s", &HardwareController::get_measured_body_velocity_mm_s,
              py::arg("yaw_deg"), py::call_guard<py::gil_scoped_release>())
+        .def("get_dribbler_rpm", &HardwareController::get_dribbler_rpm,
+             py::call_guard<py::gil_scoped_release>())
         .def("stop", &HardwareController::stop, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("loop_count", &HardwareController::loop_count)
         .def_property_readonly("current_speed", &HardwareController::current_speed)

@@ -71,6 +71,7 @@ public:
     void set_startup_yaw(double raw_yaw) { imu_->set_startup_yaw(raw_yaw); }
     HardwareHealth health() const;
     std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);
+    double get_dribbler_rpm();
     void stop();
     void set_drive_current_limits(double constant_speed_amps, double acceleration_amps);
     uint64_t loop_count() const { return loop_count_.load(); }
