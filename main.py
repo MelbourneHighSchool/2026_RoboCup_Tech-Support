@@ -650,7 +650,7 @@ try:
                 ball_y = peer_msg["ball_y"]
 
             if bot_mode == BotMode.DEFENCE:
-                direction, speed, rotation, steering_state, kick, dribbler = defence.defence(
+                direction, speed, rotation, steering_state, kick, dribbler = defence.test(
                     x_pos,
                     y_pos,
                     yaw,
