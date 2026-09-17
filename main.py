@@ -565,18 +565,22 @@ try:
             has_new_camera_frame = camera_healthy and camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
             if has_new_camera_frame:
-                ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
-                ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
+                ball_global_direction = (
+                    yaw + ball_direction if ball_direction is not None else None
+                )
+                ball_x = x_pos + ball_distance * math.cos(math.radians(ball_global_direction)) if ball_distance is not None and ball_global_direction is not None else None
+                ball_y = y_pos + ball_distance * math.sin(math.radians(ball_global_direction)) if ball_distance is not None and ball_global_direction is not None else None
                 camera_bot_positions = []
                 for bot_bearing, bot_distance in bot_measurements:
                     if bot_bearing is None or bot_distance is None:
                         continue
+                    bot_global_direction = yaw + bot_bearing
                     camera_bot_positions.append(
                         (
                             x_pos
-                            + bot_distance * math.cos(math.radians(bot_bearing)),
+                            + bot_distance * math.cos(math.radians(bot_global_direction)),
                             y_pos
-                            + bot_distance * math.sin(math.radians(bot_bearing)),
+                            + bot_distance * math.sin(math.radians(bot_global_direction)),
                         )
                     )
                 last_camera_bot_positions = camera_bot_positions

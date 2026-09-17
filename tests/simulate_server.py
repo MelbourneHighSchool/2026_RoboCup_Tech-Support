@@ -118,8 +118,13 @@ def main():
                     and x_pos is not None
                     and y_pos is not None
                 ):
-                    ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction))
-                    ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction))
+                    ball_global_direction = yaw_relative + ball_direction
+                    ball_x = x_pos + ball_distance * math.cos(
+                        math.radians(ball_global_direction)
+                    )
+                    ball_y = y_pos + ball_distance * math.sin(
+                        math.radians(ball_global_direction)
+                    )
                 else:
                     ball_x = None
                     ball_y = None

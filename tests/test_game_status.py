@@ -157,13 +157,13 @@ class MainCameraFallbackTests(unittest.TestCase):
         cls.section = compile(ast.Module(body=running.body[start:end], type_ignores=[]),
                               "main-camera-section", "exec")
 
-    def scene(self, *, captured=False, peer_ball=None, last_update=0, ready=False):
+    def scene(self, *, captured=False, peer_ball=None, last_update=0, ready=False, yaw=0):
         peer = SimpleNamespace(send=lambda _: None, receive=lambda: peer_ball)
         values = {
             "camera": SimpleNamespace(get_scene_measurement=lambda: (5, 0, 999, [(0, 900)], True)),
             "status": SimpleNamespace(camera_ready=ready), "last_camera_frame_id": 4,
             "last_camera_bot_positions": [(999, 999)], "x_pos": 100, "y_pos": 200,
-            "yaw": 0, "math": math, "time": SimpleNamespace(time=lambda: 10),
+            "yaw": yaw, "math": math, "time": SimpleNamespace(time=lambda: 10),
             "last_ball_x": 300, "last_ball_y": 400, "ball_dx": 10, "ball_dy": 0,
             "last_ball_update": last_update, "BALL_TIMEOUT": 0.5,
             "break_beam": SimpleNamespace(read=lambda: captured), "peer": peer,
@@ -199,3 +199,10 @@ class MainCameraFallbackTests(unittest.TestCase):
         self.assertEqual((values["ball_x"], values["ball_y"]), (1099, 200))
         self.assertEqual(values["enemy_bot_positions"], [(1000, 200)])
         self.assertTrue(values["lined_up"])
+
+    def test_camera_scene_is_rotated_by_robot_yaw(self):
+        values = self.scene(ready=True, yaw=90)
+        self.assertAlmostEqual(values["ball_x"], 100)
+        self.assertAlmostEqual(values["ball_y"], 1199)
+        self.assertAlmostEqual(values["enemy_bot_positions"][0][0], 100)
+        self.assertAlmostEqual(values["enemy_bot_positions"][0][1], 1100)
