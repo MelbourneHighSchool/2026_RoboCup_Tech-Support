@@ -44,7 +44,7 @@ CLOSE_SHOOTING_Y_DIST = 100
 BALL_RADIUS = 21 # mm, radius of the ball
 ROBOT_RADIUS = 110 # mm, radius used for shot clearance around enemy bot centres
 # Minimum angular clearance (deg) from the near goal side wall when banking off the far wall.
-SIDE_WALL_CLEARANCE_DEG = 2
+SIDE_WALL_CLEARANCE_DEG = 5
 # When no shot/rebound is possible, pull this far toward own goal while drifting to mid Y.
 SHOT_REPOSITION_PULL_X = 400
 
@@ -335,10 +335,10 @@ def striker(
             offset = 0
             speed = 400
             if y_pos > PITCH_WIDTH / 2:
-                rotation = 120
+                rotation = 90
                 near_line = y_pos >= WHITE_MAX_Y - BALL_HIDING_LINE_THRESHOLD
             else:
-                rotation = 240
+                rotation = 270
                 near_line = y_pos <= WHITE_MIN_Y + BALL_HIDING_LINE_THRESHOLD
             # Once tucked against the sideline, advance upfield while still facing the wall.
             direction = 0 if near_line else rotation

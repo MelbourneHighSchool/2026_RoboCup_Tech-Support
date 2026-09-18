@@ -25,6 +25,7 @@ class Config:
     pause_switch_pin: object
     kicker_pin: object
     break_beam_pin: object
+    lidar_port: str = "/dev/ttyUSB0"
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -82,6 +83,10 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
                 f"{path.name}: {key}={values.get(key)!r} is not a valid board pin"
             ) from exc
 
+    lidar_port = values.get("lidar_port", "/dev/ttyUSB0")
+    if not lidar_port:
+        raise ValueError(f"{path.name}: lidar_port must be a non-empty serial device path")
+
     return Config(
         i2c_addresses,
         parse_mode("mode_switch_off"),
@@ -90,4 +95,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         parse_pin("pause_switch_pin"),
         parse_pin("kicker_pin"),
         parse_pin("break_beam_pin"),
+        lidar_port,
     )

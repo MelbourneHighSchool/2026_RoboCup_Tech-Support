@@ -2,15 +2,18 @@
 import sys
 import time
 
-from defence import LIDAR_BAUDRATE, LIDAR_PORT
+LIDAR_BAUDRATE = 460800
 
 
 def main():
+    from lib.config import load_config
+
+    lidar_port = load_config().lidar_port
     from lib import lidar
 
-    print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+    print(f"Initializing LIDAR on {lidar_port} at {LIDAR_BAUDRATE} baud...")
     try:
-        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+        lidar.init(lidar_port, LIDAR_BAUDRATE)
     except Exception as e:
         print(f"Failed to initialize LIDAR: {e}", file=sys.stderr)
         sys.exit(1)

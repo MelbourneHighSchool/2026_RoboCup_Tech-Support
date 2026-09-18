@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "lidar_config.h"
 #include "localisation.h"
 #include "sl_lidar_driver.h"
 
@@ -253,7 +254,7 @@ static bool check_lidar_health(ILidarDriver* driver) {
 static void print_usage(const char* program) {
     std::printf(
         "Usage: %s [--port DEVICE] [--baud RATE] [--yaw DEGREES]\n"
-        "  --port DEVICE  Serial device (default /dev/ttyUSB0)\n"
+        "  --port DEVICE  Serial device (default: lidar_port in config.txt; run from project root)\n"
         "  --baud RATE    Serial baud rate (default 460800)\n"
         "  --yaw DEGREES  Accurate absolute startup-relative yaw prior\n"
         "Controls: R reset global localization, Esc/Q quit\n",
@@ -261,7 +262,8 @@ static void print_usage(const char* program) {
 }
 
 int main(int argc, char** argv) {
-    std::string port = "/dev/ttyUSB0";
+    std::string port;
+    bool port_supplied = false;
     int baudrate = 460800;
     bool yaw_supplied = false;
     float imu_yaw_deg = 0.0f;
@@ -269,6 +271,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--port") && i + 1 < argc) {
             port = argv[++i];
+            port_supplied = true;
         } else if (!std::strcmp(argv[i], "--baud") && i + 1 < argc) {
             baudrate = std::atoi(argv[++i]);
         } else if (!std::strcmp(argv[i], "--yaw") && i + 1 < argc) {
@@ -280,6 +283,15 @@ int main(int argc, char** argv) {
             return 0;
         } else {
             print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    if (!port_supplied) {
+        try {
+            port = configured_lidar_port();
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "%s\n", error.what());
             return 1;
         }
     }

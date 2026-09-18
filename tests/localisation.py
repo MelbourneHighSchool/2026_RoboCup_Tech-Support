@@ -34,7 +34,6 @@ STATUS_PRINT_INTERVAL_S = 0.2
 
 MAX_MOTOR_RPM = 400
 
-LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 PITCH_X = 2430
 PITCH_Y = 1820
@@ -454,6 +453,9 @@ def monitor_pose(
 
 
 def main():
+    from lib.config import load_config
+
+    lidar_port = load_config().lidar_port
     args = parse_args()
     from lib.hardware_controller import MotorCommunicationError
 
@@ -475,8 +477,8 @@ def main():
     imu = None
     movement_controller = None
     try:
-        print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
-        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+        print(f"Initializing LIDAR on {lidar_port} at {LIDAR_BAUDRATE} baud...")
+        lidar.init(lidar_port, LIDAR_BAUDRATE)
 
         print("Waiting for first scan...")
         while not lidar.is_scan_ready():

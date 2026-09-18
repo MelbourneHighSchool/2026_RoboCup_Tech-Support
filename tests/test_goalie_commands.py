@@ -19,8 +19,14 @@ class GoalieCommandTests(unittest.TestCase):
 
     def test_stops_at_target_and_slows_when_near(self):
         self.assertEqual(goalie(GOALIE_BLOCK_X, 910, 0, 1800, 910)[1], 0)
-        self.assertEqual(goalie(GOALIE_BLOCK_X, 930, 0, 1800, 910)[1], 60)
-        self.assertEqual(goalie(GOALIE_BLOCK_X, 1200, 0, 1800, 910)[1], 700)
+        self.assertEqual(goalie(GOALIE_BLOCK_X, 920, 0, 1800, 910)[1], 0)
+        near_speed = goalie(GOALIE_BLOCK_X, 960, 0, 1800, 910)[1]
+        far_speed = goalie(GOALIE_BLOCK_X, 1200, 0, 1800, 910)[1]
+        self.assertGreater(near_speed, 400)
+        self.assertLess(near_speed, far_speed)
+        # At 3000 mm/s², braking from this speed takes the available 40 mm.
+        self.assertAlmostEqual(near_speed ** 2 / (2 * 3000), 40)
+        self.assertEqual(goalie(1300, 910, 0, 1800, 910)[1], 2000)
 
     def test_tracks_through_centre_without_intermediate_home_target(self):
         for y in (800, 890, 910, 930):

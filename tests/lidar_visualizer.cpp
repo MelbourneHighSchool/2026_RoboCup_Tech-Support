@@ -12,7 +12,7 @@
  *     -I./rplidar_sdk/sdk/include -I./rplidar_sdk/sdk/src \
  *     -L./rplidar_sdk/output/Linux/Release -lsl_lidar_sdk -lSDL2 -lpthread -lrt
  *
- * Serial Port: /dev/ttyUSB0
+ * Serial Port: lidar_port in config.txt (run from the project root)
  * Baudrate: 460800
  */
 
@@ -25,6 +25,7 @@
 
 #include <SDL2/SDL.h>
 
+#include "lidar_config.h"
 #include "sl_lidar.h"
 #include "sl_lidar_driver.h"
 
@@ -33,7 +34,6 @@
 #endif
 
 // Configuration
-#define SERIAL_PORT "/dev/ttyUSB0"
 #define BAUDRATE 460800
 
 // Window settings
@@ -181,7 +181,7 @@ void renderScan(SDL_Renderer* renderer, sl_lidar_response_measurement_node_hq_t*
 void printUsage(const char* progname) {
     printf("RPLidar C1 Bird's Eye View Visualizer\n");
     printf("Usage: %s\n", progname);
-    printf("\nSerial Port: %s\n", SERIAL_PORT);
+    printf("\nSerial Port: lidar_port in config.txt (run from the project root)\n");
     printf("Baudrate: %d\n", BAUDRATE);
     printf("\nControls:\n");
     printf("  ESC or Q - Quit\n");
@@ -197,6 +197,13 @@ int main(int argc, char* argv[]) {
     
     printf("RPLidar C1 Bird's Eye View Visualizer\n");
     printf("SDK Version: %s\n", SL_LIDAR_SDK_VERSION);
+    std::string port;
+    try {
+        port = configured_lidar_port();
+    } catch (const std::exception& error) {
+        fprintf(stderr, "%s\n", error.what());
+        return 1;
+    }
     
     // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -238,10 +245,10 @@ int main(int argc, char* argv[]) {
     }
     
     // Create serial channel and connect
-    printf("Connecting to LIDAR at %s (baudrate: %d)...\n", SERIAL_PORT, BAUDRATE);
-    IChannel* channel = *createSerialPortChannel(SERIAL_PORT, BAUDRATE);
+    printf("Connecting to LIDAR at %s (baudrate: %d)...\n", port.c_str(), BAUDRATE);
+    IChannel* channel = *createSerialPortChannel(port.c_str(), BAUDRATE);
     if (!channel) {
-        fprintf(stderr, "Error: Unable to create serial channel for %s\n", SERIAL_PORT);
+        fprintf(stderr, "Error: Unable to create serial channel for %s\n", port.c_str());
         delete drv;
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -261,11 +268,11 @@ int main(int argc, char* argv[]) {
     }
     
     if (!connected) {
-        fprintf(stderr, "Error: Cannot connect to LIDAR at %s\n", SERIAL_PORT);
+        fprintf(stderr, "Error: Cannot connect to LIDAR at %s\n", port.c_str());
         fprintf(stderr, "Make sure:\n");
         fprintf(stderr, "  1. The LIDAR is connected\n");
         fprintf(stderr, "  2. You have permission to access the serial port\n");
-        fprintf(stderr, "     (try: sudo chmod 666 %s)\n", SERIAL_PORT);
+        fprintf(stderr, "     (try: sudo chmod 666 %s)\n", port.c_str());
         delete drv;
         delete channel;
         SDL_DestroyRenderer(renderer);

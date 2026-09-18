@@ -6,7 +6,6 @@ import time
 
 from lib import lidar
 
-LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 CARDINAL_ANGLES = (0.0, 90.0, 180.0, 270.0)
 
@@ -18,13 +17,16 @@ def format_distance(distance_mm):
 
 
 def main():
+    from lib.config import load_config
+
+    lidar_port = load_config().lidar_port
     print("LIDAR range test")
     print("=" * 40)
-    print(f"Port: {LIDAR_PORT}, baud: {LIDAR_BAUDRATE}")
+    print(f"Port: {lidar_port}, baud: {LIDAR_BAUDRATE}")
     print()
 
     try:
-        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+        lidar.init(lidar_port, LIDAR_BAUDRATE)
     except Exception as e:
         print(f"Failed to initialize LIDAR: {e}", file=sys.stderr)
         sys.exit(1)

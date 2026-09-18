@@ -168,7 +168,7 @@ BALL_DECELERATION_SPEED = 1000  # mm/s^2
 YAW_CORRECT_SPEED = 1000  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
-ACCELERATION = 3000  # mm/s^2
+ACCELERATION = 8000  # mm/s^2
 KICK_SPEED = 2000
 
 log_line = None

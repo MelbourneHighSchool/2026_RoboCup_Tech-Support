@@ -3,7 +3,7 @@ import math
 # Goalie tracks along this fixed X line, with bounded sideways travel.
 GOALIE_BLOCK_X = 530
 GOALIE_MAX_SPEED = 2000
-GOALIE_POSITION_GAIN = 0.02
+GOALIE_BRAKING_ACCEL = 3000  # mm/s²; lower values start braking earlier.
 GOALIE_STOP_DISTANCE = 10
 GOALIE_BOX_Y_MIN = 460
 GOALIE_BOX_Y_MAX = 1360
@@ -86,7 +86,7 @@ def keep_motion_inside_white_lines(x_pos, y_pos, direction, speed):
         return direction, 0
     return math.degrees(math.atan2(velocity_y, velocity_x)), guarded_speed
 
-# Inputs: 
+# Inputs:
 # x_pos: x position of the robot
 # y_pos: y position of the robot
 # yaw: yaw value of the robot
@@ -94,10 +94,9 @@ def keep_motion_inside_white_lines(x_pos, y_pos, direction, speed):
 # ball_y: y position of the ball
 # ball_captured: True when the ball is touching the capture zone
 # steering_state: caller-provided flag indicating if this bot is currently steering
-
 # friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
 # enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
-# Outputs: direction, speed, rotation, steering, kick
+# Outputs:
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
@@ -195,6 +194,22 @@ def defence(
     )
     return direction, speed, rotation, steering, kick, dribbler
 
+# Inputs:
+# x_pos: x position of the robot
+# y_pos: y position of the robot
+# yaw: yaw value of the robot
+# ball_x: x position of the ball
+# ball_y: y position of the ball
+# ball_captured: True when the ball is touching the capture zone
+# steering_state: caller-provided flag indicating if this bot is currently steering
+# friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
+# enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
+# Outputs:
+# direction: degrees to move in
+# speed: mm/s to move at
+# rotation: yaw value to rotate towards
+# steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
+# kick: True if the bot should kick the ball
 def goalie(
     x_pos,
     y_pos,
@@ -217,14 +232,21 @@ def goalie(
             target_y = ball_y
         rotation = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos)) % 360
 
+    dribbler = 0
     kick = False
     if ball_captured:
-        kick = True
+        if (yaw > 350 or yaw < 10):
+            dribbler = -1
+            kick = True
+        else:
+            dribbler = 1
+            rotation = 0
 
     target_y = max(GOALIE_BOX_Y_MIN, min(target_y, GOALIE_BOX_Y_MAX))
     dx, dy = GOALIE_BLOCK_X - x_pos, target_y - y_pos
     distance = math.hypot(dx, dy)
     direction = math.degrees(math.atan2(dy, dx))
-    speed = min(GOALIE_MAX_SPEED, GOALIE_POSITION_GAIN * distance * distance) if distance > GOALIE_STOP_DISTANCE else 0
+    remaining = max(0, distance - GOALIE_STOP_DISTANCE)
+    speed = min(GOALIE_MAX_SPEED, math.sqrt(2 * GOALIE_BRAKING_ACCEL * remaining))
     direction, speed = keep_motion_inside_white_lines(x_pos, y_pos, direction, speed)
-    return direction, speed, rotation, kick, 0
+    return direction, speed, rotation, kick, dribbler

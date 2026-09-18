@@ -33,7 +33,6 @@ CONSTANT_SPEED_TORQUE = 8.0  # Amps; The current limit when the bot is at a cons
 ACCELERATION_TORQUE = 8.0  # Amps; The current limit when the bot is accelerating.
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
 
-LIDAR_PORT = "/dev/ttyUSB0" # LIDAR port. Usually "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
 MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
@@ -85,6 +84,7 @@ def classify_camera_bot_positions(
 # Load the config into the global variables
 config = load_config()
 I2C_ADDRESSES = config.i2c_addresses
+LIDAR_PORT = config.lidar_port
 MODE_SWITCH_OFF = config.mode_switch_off
 MODE_SWITCH_ON = config.mode_switch_on
 MODE_SWITCH_PIN = config.mode_switch_pin

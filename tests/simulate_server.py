@@ -8,7 +8,7 @@ import time
 from lib import lidar, send_log
 from lib.camera import Camera
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
-from striker import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE, LIDAR_PORT
+from striker import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE
 
 PORT = send_log.PORT
 PITCH_WIDTH = 2430
@@ -33,6 +33,9 @@ def format_log_line(x_pos, y_pos, yaw_relative, ball_x, ball_y, other_bot_positi
 
 
 def main():
+    from lib.config import load_config
+
+    lidar_port = load_config().lidar_port
     camera = None
     hardware = None
 
@@ -42,9 +45,9 @@ def main():
     print(f"Connect with: python simulate.py --connect 127.0.0.1:{PORT}")
 
     try:
-        print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+        print(f"Initializing LIDAR on {lidar_port} at {LIDAR_BAUDRATE} baud...")
         try:
-            lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+            lidar.init(lidar_port, LIDAR_BAUDRATE)
         except Exception as exc:
             raise RuntimeError(f"Failed to initialize LIDAR: {exc}") from exc
 
