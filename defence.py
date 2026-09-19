@@ -1,9 +1,9 @@
 import math
 
 # Goalie tracks along this fixed X line, with bounded sideways travel.
-GOALIE_BLOCK_X = 530
-GOALIE_MAX_SPEED = 2000
-GOALIE_BRAKING_ACCEL = 3000  # mm/s²; lower values start braking earlier.
+GOALIE_BLOCK_X = 550
+GOALIE_MAX_SPEED = 3000
+GOALIE_BRAKING_ACCEL = 6000  # mm/s²; lower values start braking earlier.
 GOALIE_STOP_DISTANCE = 10
 GOALIE_BOX_Y_MIN = 460
 GOALIE_BOX_Y_MAX = 1360
@@ -222,6 +222,7 @@ def goalie(
     lined_up=False,
 ):
     """Track the ball-to-goal line at fixed X; correct any displacement from it."""
+    target_x = GOALIE_BLOCK_X
     target_y = GOAL_CENTRE_Y
     rotation = 0
     if ball_x is not None and ball_y is not None:
@@ -229,6 +230,8 @@ def goalie(
             fraction = (GOALIE_BLOCK_X - YELLOW_GOAL_BACK_X) / (ball_x - YELLOW_GOAL_BACK_X)
             target_y += fraction * (ball_y - GOAL_CENTRE_Y)
         else:
+            if ball_y < GOALIE_BOX_Y_MIN or ball_y > GOALIE_BOX_Y_MAX:
+                target_x = ball_x
             target_y = ball_y
         rotation = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos)) % 360
 
@@ -242,8 +245,9 @@ def goalie(
             dribbler = 1
             rotation = 0
 
+    target_x = max(WHITE_MIN_X+180, min(target_x, WHITE_MAX_X))
     target_y = max(GOALIE_BOX_Y_MIN, min(target_y, GOALIE_BOX_Y_MAX))
-    dx, dy = GOALIE_BLOCK_X - x_pos, target_y - y_pos
+    dx, dy = target_x - x_pos, target_y - y_pos
     distance = math.hypot(dx, dy)
     direction = math.degrees(math.atan2(dy, dx))
     remaining = max(0, distance - GOALIE_STOP_DISTANCE)
