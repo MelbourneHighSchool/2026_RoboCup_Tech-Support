@@ -1,5 +1,5 @@
 Any time you don't understand something about how this project works, try and figure it out. If you still don't understand, ask for help. Once you figure it out/get an answer, add an explanation of the problem and how to solve it to this file, so you don't run into the same problem again. Do not just save every change you make here, only add to this file if you didn't understand something and you had to spend time working it out.
-Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bin/ruff check <path>`). If that does not work (for example `.venv` is missing or the command fails), tell the user. CI uses Ruff **0.16.2** (pinned in `.github/workflows/ruff.yml`); install the same version locally (`pip install 'ruff>=0.16.2'`) so local results match GitHub Actions. Ruff 0.15.x has fewer default rules and will pass checks that 0.16 fails.
+Whenever you finish writing python code, lint with `.venv/bin/ruff check` (or `.venv/bin/ruff check <path>`). If that does not work (for example `.venv` is missing or the command fails), tell the user. CI uses Ruff **0.16.2** (pinned in `.github/workflows/ruff.yml`); install the same version locally (`pip install 'ruff>=0.16.2'`) so local results match GitHub Actions. Ruff 0.15.x has fewer default rules and will pass checks that 0.16 fails.
 
 ## Legacy Python motor / movement tools
 
