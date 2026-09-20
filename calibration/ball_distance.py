@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from lib.config import load_camera_bearing_offset
 from lib.hailo_ball import HailoBallDetector
 
 logger = logging.getLogger(__name__)
@@ -219,8 +220,8 @@ def calculate_ball_bearing_deg(centre_x, centre_y, frame_width, frame_height):
 
 
 def apply_camera_bearing_offset(bearing_deg):
-    """Match lib/camera.py's additional mount offset (270° after physical rotation)."""
-    return bearing_deg + 270.0
+    """Apply the robot-specific camera mount offset from config.txt."""
+    return bearing_deg + load_camera_bearing_offset()
 
 
 def _calculate_rmse(actual_values, predicted_values):

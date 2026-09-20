@@ -1,8 +1,7 @@
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-
-import board
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.txt"  # see example_config.txt
 
@@ -26,17 +25,10 @@ class Config:
     kicker_pin: object
     break_beam_pin: object
     lidar_port: str = "/dev/ttyUSB0"
+    camera_bearing_offset_deg: float = 270.0
 
 
-def load_config(path: Path = CONFIG_PATH) -> Config:
-    # Load all settings from the config file
-
-    # If the config file is not found, raise an error
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Missing {path.name}. Copy example_config.txt to config.txt and edit as needed."
-        )
-
+def _read_values(path: Path) -> dict[str, str]:
     # Parse the config file into a dictionary following these rules:
     # - Lines starting with # are ignored as comments
     # - Any key-value pair must be in the format "key=value"
@@ -48,6 +40,38 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
                 continue
             key, value = line.split("=", 1)
             values[key.strip().lower()] = value.strip()
+
+    return values
+
+
+def _camera_offset(values, path):
+    try:
+        offset = float(values.get("camera_bearing_offset_deg", "270"))
+        if not math.isfinite(offset):
+            raise ValueError
+        return offset
+    except ValueError as exc:
+        raise ValueError(f"{path.name}: camera_bearing_offset_deg must be a finite number") from exc
+
+
+def load_camera_bearing_offset(path: Path = CONFIG_PATH) -> float:
+    """Read camera mounting without requiring GPIO settings or Pi hardware.
+
+    Standalone camera/calibration tools retain the old mount if config is absent.
+    """
+    return _camera_offset(_read_values(path), path) if path.is_file() else 270.0
+
+
+def load_config(path: Path = CONFIG_PATH) -> Config:
+    # Load all settings from the config file
+
+    # If the config file is not found, raise an error
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Missing {path.name}. Copy example_config.txt to config.txt and edit as needed."
+        )
+
+    values = _read_values(path)
 
     # If included in the config file, parse the motor I2C addresses as a comma-separated list of integers
     # Motor I2C addresses follow the order: back left, back right, front right, front left, dribbler (optional)
@@ -70,6 +94,8 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
             ) from exc
 
     def parse_pin(key: str):
+        import board
+
         # Parse a BCM GPIO number (e.g. 16) into the matching board.D# pin
         try:
             pin_number = int(values[key])
@@ -96,4 +122,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         parse_pin("kicker_pin"),
         parse_pin("break_beam_pin"),
         lidar_port,
+        _camera_offset(values, path),
     )

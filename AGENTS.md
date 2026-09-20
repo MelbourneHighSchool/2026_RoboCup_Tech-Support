@@ -298,3 +298,9 @@ force motor targets or interrupt kicks. Python resets its recovery average when
 while the operator has paused, then calls `set_startup_yaw()` before permitting a
 later run transition. Raw scan progress remains independent of localization
 confidence and gating when diagnosing LIDAR outages.
+
+## Camera mount bearing offset
+
+**Problem:** Camera mounting correction was duplicated between live detection and calibration readouts, while goal alignment assumed image-left was forward. The raw bearing helper subtracts 90 degrees from image `atan2`, so removing the old 270-degree offset does not make image-up forward.
+
+**Solution:** `camera_bearing_offset_deg` in `config.txt` defaults to 270 (image-left forward); use 180 for image-up forward. `Camera` loads it once for ball/bot bearings and the goal-alignment ray, and calibration readouts use the same setting. Restart camera/game/dashboard after changing it. `load_camera_bearing_offset()` reads only this setting without importing Pi GPIO dependencies, preserving standalone desktop calibration/model tools and the legacy default when config is absent.

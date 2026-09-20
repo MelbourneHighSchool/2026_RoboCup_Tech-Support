@@ -2,6 +2,7 @@ import asyncio
 import copy
 import io
 import logging
+import math
 import socketserver
 import threading
 import time
@@ -24,6 +25,7 @@ from calibration.ball_distance import (
     load_distance_calibration,
     predict_distance_from_calibration,
 )
+from lib.config import load_camera_bearing_offset
 from lib.hailo_ball import HailoBallDetector
 from lib.opencv import OpenCV
 
@@ -34,11 +36,20 @@ DEFAULT_BALL_MODEL_PATH = _PROJECT_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
 
 
-def _goal_lined_up(contours, frame_width, frame_height):
-    """Check the filled target goal against the centre-to-left-edge segment."""
+def _goal_lined_up(contours, frame_width, frame_height, bearing_offset_deg=270.0):
+    """Check the filled target goal along the configured forward image ray."""
     mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
     cv2.drawContours(mask, contours, -1, 255, cv2.FILLED)
-    return bool(np.any(mask[frame_height // 2, :frame_width // 2 + 1]))
+    ray = np.zeros_like(mask)
+    angle = math.radians(90.0 - bearing_offset_deg)
+    length = math.hypot(frame_width, frame_height)
+    centre = (frame_width // 2, frame_height // 2)
+    endpoint = (
+        round(centre[0] + length * math.cos(angle)),
+        round(centre[1] + length * math.sin(angle)),
+    )
+    cv2.line(ray, centre, endpoint, 255, 1)
+    return bool(np.any(mask & ray))
 
 
 def _detection_dict_from_xyxy(xyxy, confidence, frame_width, frame_height, *, point="centre"):
@@ -95,7 +106,12 @@ class Camera:
         diagnostics=False,
         bot_distance_calibration_file=DEFAULT_BOT_DISTANCE_CALIBRATION_FILE,
         enable_goal_detection=True,
+        camera_bearing_offset_deg=None,
     ):
+        self.camera_bearing_offset_deg = (
+            load_camera_bearing_offset()
+            if camera_bearing_offset_deg is None else camera_bearing_offset_deg
+        )
         self.ball_model_path = _resolve_model_path(ball_model_path)
         self.diagnostics_enabled = diagnostics
         self._diagnostic_snapshot = None
@@ -131,7 +147,6 @@ class Camera:
             video_config = self.picam2.create_video_configuration(**config_options)
             self.picam2.configure(video_config)
             self.picam2.controls.FrameRate = frame_rate
-            self.forward_angle = 0  # Add forward angle property
             # self.picam2.controls.ExposureTime = 30000
             self.picam2.controls.AnalogueGain = 10.0
             self.output = self.StreamingOutput()
@@ -382,7 +397,7 @@ class Camera:
             frame_width,
             frame_height,
         )
-        bearing += 270
+        bearing += self.camera_bearing_offset_deg
         distance = predict_distance_from_calibration(
             self.bot_distance_calibration if target == "bot" else self.distance_calibration,
             detection["radial_pixels"],
@@ -501,7 +516,9 @@ class Camera:
                 cv = getattr(self, "goal_detector", None) or OpenCV()
                 contours = cv.process_image(hsv_frame, True)
                 yellow_contours = cv.process_image(hsv_frame, False)
-                lined_up = _goal_lined_up(contours, frame_w, frame_h)
+                lined_up = _goal_lined_up(
+                    contours, frame_w, frame_h, self.camera_bearing_offset_deg
+                )
             else:
                 contours, yellow_contours, lined_up = [], [], True
 

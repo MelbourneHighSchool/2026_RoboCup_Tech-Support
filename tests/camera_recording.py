@@ -34,6 +34,7 @@ def _import_camera_without_picamera_hardware():
 
 def _make_camera_for_infer(camera_module):
     camera = camera_module.Camera.__new__(camera_module.Camera)
+    camera.camera_bearing_offset_deg = 270.0
     camera._infer_stop = threading.Event()
     camera._is_shutting_down = False
     camera._latest_lock = threading.Lock()
@@ -260,3 +261,38 @@ def inference_diagnostics_keep_source_pixels_and_all_boxes():
     again = camera.get_diagnostic_snapshot()
     np.testing.assert_array_equal(again["frame"], source)
     assert len(again["bots"]) == 1
+
+
+@pytest.mark.parametrize("offset,forward,right", [
+    (270, (0, 4), (4, 0)),
+    (180, (4, 0), (8, 4)),
+])
+def test_camera_mount_bearings_and_goal_alignment(offset, forward, right):
+    module = _import_camera_without_picamera_hardware()
+    camera = _make_camera_for_infer(module)
+    camera.camera_bearing_offset_deg = offset
+    for point, expected in ((forward, 0), (right, 90)):
+        detection = {"centre": point, "radial_pixels": 4}
+        for target in ("ball", "bot"):
+            bearing, _ = camera._polar_from_detection(detection, 8, 8, target=target)
+            assert bearing % 360 == pytest.approx(expected)
+    for point, expected in ((forward, True), (right, False)):
+        x, y = point
+        contour = np.array([[[x-1, y-1]], [[x+1, y-1]],
+                            [[x+1, y+1]], [[x-1, y+1]]], dtype=np.int32)
+        assert module._goal_lined_up([contour], 8, 8, offset) is expected
+
+
+def test_camera_offset_config(tmp_path):
+    from lib.config import load_camera_bearing_offset
+
+    path = tmp_path / "config.txt"
+    assert load_camera_bearing_offset(path) == 270
+    path.write_text("# Old configuration\ni2c_addresses=28,32,31,30\n")
+    assert load_camera_bearing_offset(path) == 270
+    path.write_text("camera_bearing_offset_deg=180 # image up\n")
+    assert load_camera_bearing_offset(path) == 180
+    for value in ("nan", "inf", "up"):
+        path.write_text(f"camera_bearing_offset_deg={value}\n")
+        with pytest.raises(ValueError, match="camera_bearing_offset_deg"):
+            load_camera_bearing_offset(path)

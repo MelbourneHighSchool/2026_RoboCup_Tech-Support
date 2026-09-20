@@ -15,3 +15,8 @@ mode_switch_pin=16
 pause_switch_pin=12
 kicker_pin=21
 break_beam_pin=17
+
+# Camera mounting: 270 = image-left is forward (original rotated mount).
+# Use 180 when image-up is forward. Bearings increase clockwise.
+# Restart camera/game/dashboard after changing this setting.
+camera_bearing_offset_deg=270

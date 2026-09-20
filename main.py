@@ -401,6 +401,7 @@ try:
         resolution=CAMERA_RESOLUTION,
         frame_rate=CAMERA_FPS,
         enable_goal_detection=ENABLE_GOAL_DETECTION,
+        camera_bearing_offset_deg=config.camera_bearing_offset_deg,
         recording_path=(
             recording_session.video_path if recording_session is not None else None
         ),
