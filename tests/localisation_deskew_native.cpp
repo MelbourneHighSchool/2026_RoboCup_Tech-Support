@@ -176,5 +176,5 @@ int main() {
     geometry(); bearings_and_unknowns(); history_checks(); timing_and_resets();
     high_speed_diagnostics_and_prior();
     loc_stop(); loc_configure_deskew("off"); loc_set_replay_time(-1);
-    std::cout << "Deskew geometry, slip, timing, reset and gate checks passed\n";
+    std::cout << "Deskew geometry, slip, timing, reset and high-speed acceptance checks passed\n";
 }

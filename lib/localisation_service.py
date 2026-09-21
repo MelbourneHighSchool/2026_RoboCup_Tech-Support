@@ -214,8 +214,6 @@ class LocalisationSession:
     """One hardware owner calls tick at 50 Hz, even without a confident fix."""
 
     SENSOR_TIMEOUT_S = 0.5
-    ROTATION_PREDICTION_TIMEOUT_S = 3.0
-    SCAN_RESUME_TIMEOUT_S = 0.5
 
     def __init__(self, lidar, imu, startup_yaw, velocity, clock=time.monotonic, *, line_feed=None, use_pcb=USE_PCB):
         configure_motion(lidar, use_pcb=use_pcb)
@@ -233,9 +231,6 @@ class LocalisationSession:
         self.last_mcl_time = self.last_time
         self.imu_count = -1
         self.last_imu_time = self.last_time
-        self.scan_updates_enabled = True
-        self.rotation_prediction = False
-        self.scan_resume_deadline = None
         self.state = {}
 
     def tick(self, controller=None):
@@ -261,36 +256,12 @@ class LocalisationSession:
         if updates != self.mcl_updates:
             self.mcl_updates = updates
             self.last_mcl_time = now
-            self.rotation_prediction = False
-            self.scan_resume_deadline = None
         scans_enabled = self.lidar.scan_updates_enabled()
         mcl_age = now - self.last_mcl_time
-        if (self.scan_updates_enabled and not scans_enabled
-                and not self.rotation_prediction and updates > 0
-                and mcl_age <= self.SENSOR_TIMEOUT_S and ok):
-            self.rotation_prediction = True
-        if (scans_enabled and self.rotation_prediction
-                and self.scan_resume_deadline is None):
-            self.scan_resume_deadline = now + self.SCAN_RESUME_TIMEOUT_S
-        self.scan_updates_enabled = scans_enabled
-
-        # A gate transition cannot renew this budget: only an actual MCL
-        # correction can. Keep raw sensor and dashboard worker watchdogs live.
-        rotation_grace = (
-            self.rotation_prediction
-            and mcl_age <= self.ROTATION_PREDICTION_TIMEOUT_S
-            and (self.scan_resume_deadline is None or now <= self.scan_resume_deadline)
-        )
-        imu_yaw = self.imu.get_yaw()
-        gyro_z = self.imu.get_gyro_z_deg_s()
-        prediction_sensors_ok = all(
-            value is not None and math.isfinite(value) for value in (imu_yaw, gyro_z)
-        )
         fresh = (
             now - self.last_scan_time <= self.SENSOR_TIMEOUT_S
             and now - self.last_imu_time <= self.SENSOR_TIMEOUT_S
-            and (mcl_age <= self.SENSOR_TIMEOUT_S
-                 or (rotation_grace and prediction_sensors_ok))
+            and mcl_age <= self.SENSOR_TIMEOUT_S
         )
         self.state = {
             "pose": [x, y, yaw, confidence, bool(ok)],
@@ -302,7 +273,7 @@ class LocalisationSession:
             "mcl_updates": updates,
             "mcl_age_s": mcl_age,
             "scan_updates_enabled": scans_enabled,
-            "rotation_prediction": bool(rotation_grace),
+            "rotation_prediction": False,  # Retained for diagnostic consumers.
             "correction": list(self.lidar.get_last_scan_correction()),
             "recovery": list(self.lidar.get_recovery_status()),
             "odometry": asdict(odometry),

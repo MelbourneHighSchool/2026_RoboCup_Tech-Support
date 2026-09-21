@@ -47,7 +47,7 @@ Whenever you finish writing python code, lint with `.venv/bin/ruff check` (or `.
 - Confidence combines inlier quality, particle spread, and visible wall-normal diversity (one wall alone cannot claim a strong along-wall pose). Resample only when ESS drops below 50% of the particle count so partial scans keep diversity.
 - `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive). `vx`/`vy` are body-frame mm/s with **vx = forward** and **vy = left**.
 - Estimation runs in a background thread; Python reads the latest pose.
-- Fast rotation gate: when `|omega|` exceeds 50 deg/s, MCL skips LIDAR scan updates and dead-reckons via predict only. Scan updates resume after `|omega|` stays below 25 deg/s for 150 ms. `lidar.scan_updates_enabled()` reports whether scans are currently accepted.
+- Angular speed no longer gates scan updates. Per-beam compensation supports turning scans; timing/history checks still reject unusable scans. `lidar.scan_updates_enabled()` remains a compatibility API returning true.
 
 **Problem:** LIDAR often drops walls at extreme incidence angles. The old hit-only Gaussian treated every surviving return as a perfect first-wall match and ignored missing bearings, so partial scans could under-constrain or destabilize the pose.
 
@@ -58,7 +58,7 @@ Whenever you finish writing python code, lint with `.venv/bin/ruff check` (or `.
 1. `lidar.init(port, baudrate)` — start scan thread.
 2. `lidar.start_coordinates(pitch_x, pitch_y)` — start MCL thread and build pitch map.
 3. `lidar.set_imu_yaw(yaw_deg)` — feed startup-relative IMU yaw as a soft MCL yaw prior (call each control loop).
-4. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans (also drives the fast-rotation gate from `omega_deg_s`).
+4. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans.
 5. `lidar.get_pose()` → `(x, y, yaw_deg, confidence)` — last estimate (None if not confident).
 6. `lidar.get_coordinates()` → `(x, y)` — backward-compatible confident position only.
 7. `lidar.get_coordinates_info()` → `(x, y, yaw_deg, confidence, ok)` — diagnostics.
@@ -238,7 +238,7 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 
 **Problem:** MCL heading moved opposite to the physical turn while fast-rotation gating disabled scan correction. Quaternion yaw was reversed with `startup_yaw - raw_yaw`, but sensor gyro Z was passed through with its original sign.
 
-**Solution:** The native adapter exports `-sensor_gyro_z * 180/pi` so clockwise turns produce positive relative yaw changes and positive angular velocity with the upside-down mounting. Python callers pass this value directly without another negation. The absolute-rate rotation gate is unaffected. Native protocol tests cover both rate signs; rebuild the hardware extension on the Pi after updating.
+**Solution:** The native adapter exports `-sensor_gyro_z * 180/pi` so clockwise turns produce positive relative yaw changes and positive angular velocity with the upside-down mounting. Python callers pass this value directly without another negation. Native protocol tests cover both rate signs; rebuild the hardware extension on the Pi after updating.
 
 **Problem:** The imported Adafruit wrapper needs Arduino/BusIO, but the underlying SH-2/SHTP sources are portable C. SH-2 stores a global session; `sh2_open()` can return success after reset timeout, ignores the HAL open result, and its product-ID operation originally had no timeout. Returning zero from HAL writes also triggers an unbounded retry loop.
 
@@ -254,13 +254,11 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 
 ## LIDAR acquisition timestamps and slip uncertainty
 
-**Problem:** Dashboard rotation stopped around 90 degrees because `LocalisationSession` required an MCL correction every 0.5 s, while the native rotation gate deliberately suspends corrections above 50 deg/s. Fresh raw scans and IMU reports did not prevent the stale-pose abort.
-
-**Solution:** A gate closure from a recent valid MCL fix permits prediction for at most 3 s since the last correction, with continuing raw scans, IMU reports, and available finite yaw/gyro readings. On gate reopening, correction must resume within 0.5 s, still within the 3 s overall limit. Gate toggles cannot renew either deadline; an actual correction resets the allowance. The state includes `rotation_prediction` and retains the true `mcl_age_s`. The dashboard's worker watchdog and invalid-pose/pause checks remain active. Regression checks: `.venv/bin/python -m pytest tests/dashboard_test.py -q`.
+**Historical issue:** Dashboard rotation previously needed a prediction grace period because the native rotation gate suspended scan corrections. With per-beam compensation, the gate and its grace period have been removed. `LocalisationSession` now always requires scan, IMU and MCL-correction freshness within 0.5 s; worker watchdog and invalid-pose/pause checks remain active. The compatibility diagnostic `rotation_prediction` is always false. Regression checks: `.venv/bin/python -m pytest tests/dashboard_test.py -q`.
 
 **Problem:** Timing the nonblocking `grabScanDataHq()` call measures retrieval of an already completed revolution, not acquisition. The SDK timestamp's clock and reference point must be checked before using it with odometry history.
 
-**Solution:** `grabScanDataHqWithTimeStamp()` returns the first sample's timestamp. The bundled Linux SDK uses `CLOCK_MONOTONIC` microseconds (`sdk/src/arch/linux/timer.cpp`), matching Linux steady-clock odometry. Retain `LidarScanMode` from `startScan()` and add `(count - 1) * us_per_sample / 2` before converting to seconds. Use the original count including misses, before sorting/filtering. This is a whole-scan midpoint approximation, not per-beam deskewing. Invalid timestamps are excluded from localisation; scans older than retained odometry cannot be fully rewound and are rejected.
+**Solution:** `grabScanDataHqWithTimeStamp()` returns the first sample's timestamp. The bundled Linux SDK uses `CLOCK_MONOTONIC` microseconds (`sdk/src/arch/linux/timer.cpp`), matching Linux steady-clock odometry. Retain `LidarScanMode` from `startScan()` and add `(count - 1) * us_per_sample / 2` before converting to seconds. Use the original count including misses, before sorting/filtering. The midpoint anchors the pose; per-beam times are reconstructed from original acquisition indices for deskewing. Invalid timestamps are excluded from localisation; scans older than retained odometry cannot be fully rewound and are rejected.
 
 **Problem:** In Pi reverse runs, wheel travel exceeded physical travel while recovery did not trigger. Stationary diffusion of 8 mm/sqrt(s) does not represent that moving uncertainty.
 
@@ -339,7 +337,7 @@ Variable prediction/scoring delays can leave gaps or overlaps when every history
 step independently starts at `now - dt`. In PCB mode, intervals join at the
 previous prediction endpoint, with recorded rates scaled to reproduce the exact
 motion integrated with the caller's `dt`.
-Stale or already-consumed readings are skipped; the rotation gate only gates LIDAR. Keep floor
+Stale or already-consumed readings are skipped. Keep floor
 likelihood out of the LIDAR recovery-quality baseline. Validate paint dimensions
 and likelihood strength on the real pitch before enabling it in operation.
 
@@ -356,7 +354,7 @@ history carries report times and a reset/re-zero epoch. `lib/motion_history.h`
 interpolates bounded histories and integrates matched forward/inverse motion.
 SDK beam times are reconstructed before angular selection; selected bearings are
 retained and invalid hits are excluded. `SOCCER_DESKEW=off|rotation|full` selects
-compensation (default full for these callers); the rotation gate stays enabled.
+compensation (default full for these callers); angular-speed gating has been removed.
 Use `SOCCER_LOCALISATION_RECORD` and `python -m lib.replay_localisation` for
 comparison; see `lib/LOCALISATION_TIMING.md` for controls and timing limitations.
 

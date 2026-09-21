@@ -587,47 +587,28 @@ def rotation_session():
     return lidar, imu, tick
 
 
-def test_rotation_allows_prediction_and_resumes_correction(rotation_session):
+def test_rotation_requires_fresh_corrections(rotation_session):
     lidar, _imu, tick = rotation_session
-    lidar.scans_enabled = False
     assert tick(.1)["fresh"]
-    state = tick(1)
-    assert state["fresh"] and state["rotation_prediction"]
-    assert state["mcl_age_s"] > .5
-    lidar.scans_enabled = True
-    assert tick(.1)["fresh"]
-    assert tick(.4)["fresh"]
+    state = tick(.5)
+    assert not state["fresh"] and not state["rotation_prediction"]
     lidar.mcl_updates += 1
-    state = tick(.1)
-    assert state["fresh"] and not state["rotation_prediction"]
-    assert not tick(.6)["fresh"]  # Normal correction timeout is restored.
-
-
-@pytest.mark.parametrize("failure", ["scan", "imu", "gyro", "yaw", "budget", "resume"])
-def test_rotation_preserves_timeouts(rotation_session, failure):
-    lidar, imu, tick = rotation_session
-    lidar.scans_enabled = False
     assert tick(.1)["fresh"]
-    assert tick(.7)["fresh"]
-    if failure == "gyro":
-        imu.get_gyro_z_deg_s = lambda: None
-    if failure == "yaw":
-        imu.get_yaw = lambda: None
-    if failure == "resume":
-        lidar.scans_enabled = True
-        assert tick(.1)["fresh"]
-        # Re-closing the gate must not extend the resumption deadline.
-        lidar.scans_enabled = False
-    state = tick(3 if failure == "budget" else .6,
-                 scan=failure != "scan", imu_report=failure != "imu")
+
+
+@pytest.mark.parametrize("failure", ["scan", "imu"])
+def test_rotation_preserves_sensor_timeouts(rotation_session, failure):
+    lidar, _imu, tick = rotation_session
+    lidar.mcl_updates += 1
+    state = tick(.6, scan=failure != "scan", imu_report=failure != "imu")
     assert not state["fresh"]
 
 
-def test_gate_cannot_rescue_already_stale_localisation(rotation_session):
+def test_legacy_gate_cannot_extend_freshness(rotation_session):
     lidar, _imu, tick = rotation_session
-    assert not tick(.6)["fresh"]
     lidar.scans_enabled = False
-    assert not tick(.1)["fresh"]
+    assert tick(.1)["fresh"]
+    assert not tick(.5)["fresh"]
 
 
 def test_stop_localisation_releases_session_and_clears_diagnostics(tmp_path):

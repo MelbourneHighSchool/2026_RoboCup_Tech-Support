@@ -243,3 +243,6 @@ logs/*
 goal_thresholds.json
 calibration_backups/
 .calibration_dashboard.lock
+
+# Generated localisation replay comparisons (retain locally)
+/comparison-*/
