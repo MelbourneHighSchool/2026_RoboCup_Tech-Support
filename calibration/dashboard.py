@@ -188,7 +188,7 @@ def scene(frame, ball, bots, calibration, bot_calibration=None):
 
 class Dashboard:
     def __init__(self, root, *, fps=15, camera_factory=None, hardware_factory=Hardware, start=True,
-                 lidar_port="/dev/ttyUSB0", lidar_baud=460800, use_pcb=USE_PCB):
+                 lidar_port=None, lidar_baud=460800, use_pcb=USE_PCB):
         self.root = Path(root)
         self.fps = fps
         self.lock = threading.RLock()

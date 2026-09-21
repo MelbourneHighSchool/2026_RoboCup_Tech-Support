@@ -39,6 +39,7 @@ LINE_SENSOR_FEED = LineSensorFeed(use_pcb=USE_PCB)
 
 TARGET_TOLERANCE_MM = 10
 MAX_SPEED_MM_S = 500
+SPEED_LIMIT_MM_S = 2000
 SLOW_RADIUS_MM = 300
 LOOP_DELAY_SECONDS = 0.02
 STATUS_PRINT_INTERVAL_S = 0.2
@@ -80,7 +81,7 @@ def parse_args():
     )
     parser.add_argument(
         "--max-speed", type=float, default=MAX_SPEED_MM_S,
-        help="Maximum translation speed in mm/s (default: 500).",
+        help="Maximum translation speed in mm/s, up to 2000 (default: 500).",
     )
     parser.add_argument(
         "--motion-noise", type=float, default=0.30,
@@ -91,8 +92,8 @@ def parse_args():
     args = parser.parse_args()
     if not math.isfinite(args.motion_noise) or args.motion_noise < 0:
         parser.error("--motion-noise must be finite and nonnegative")
-    if not math.isfinite(args.max_speed) or not 0 < args.max_speed <= MAX_SPEED_MM_S:
-        parser.error("--max-speed must be greater than zero and at most 500 mm/s")
+    if not math.isfinite(args.max_speed) or not 0 < args.max_speed <= SPEED_LIMIT_MM_S:
+        parser.error("--max-speed must be greater than zero and at most 2000 mm/s")
     return args
 
 
@@ -482,7 +483,7 @@ def main():
     from lib.hardware_controller import MotorCommunicationError
 
     from lib import lidar
-    from lib.hardware_test_utils import create_hardware
+    from lib.hardware_test_utils import MAX_YAW_RPM, WHEEL_DIAMETER, create_hardware
 
     mode = "RAW (trust diagnostic only)" if args.raw_odometry else "TRUST-SCALED"
     print(f"Odometry mode: {mode}; maximum speed: {args.max_speed:g} mm/s")
@@ -507,7 +508,11 @@ def main():
             time.sleep(0.1)
 
         print("Initializing native motors and IMU...")
-        imu = create_hardware(max_motor_rpm=MAX_MOTOR_RPM, use_pcb=USE_PCB)
+        # Allow the requested translation in any direction, with yaw headroom.
+        motor_rpm = max(MAX_MOTOR_RPM, math.ceil(
+            args.max_speed * 60 / (math.pi * WHEEL_DIAMETER) + MAX_YAW_RPM
+        ))
+        imu = create_hardware(max_motor_rpm=motor_rpm, use_pcb=USE_PCB)
         movement_controller = imu
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.1f} deg")

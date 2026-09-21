@@ -168,7 +168,7 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--preview-fps", type=float, default=15)
-    parser.add_argument("--lidar-port", default="/dev/ttyUSB0")
+    parser.add_argument("--lidar-port", default=None, help="Override lidar_port from config.txt")
     parser.add_argument("--lidar-baud", type=int, default=460800)
     args = parser.parse_args()
     if not 1 <= args.preview_fps <= 30:

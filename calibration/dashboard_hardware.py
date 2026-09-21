@@ -30,7 +30,7 @@ def target_command(pose, target, speed, target_yaw=None):
 
 
 class Hardware:
-    def __init__(self, root, notify, *, port="/dev/ttyUSB0", baud=460800, use_pcb=USE_PCB):
+    def __init__(self, root, notify, *, port=None, baud=460800, use_pcb=USE_PCB):
         self.use_pcb = use_pcb
         self.root = root
         self.notify = notify
@@ -143,8 +143,8 @@ class Hardware:
         rates = polling_rates(data or {})
         imu = None
         try:
-            lidar.init(self.port, self.baud)
             config = load_config()
+            lidar.init(config.lidar_port if self.port is None else self.port, self.baud)
             imu = HardwareController.from_i2c_addresses(
                 config.i2c_addresses,
                 50,
