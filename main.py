@@ -21,6 +21,12 @@ from lib.communication import Peer
 from lib.config import BotMode, load_config
 from lib.game_status import GameStatus, ImuPause
 from lib.line_sensors import LineSensorFeed
+from lib.localisation_motion import (
+    close_motion_capture,
+    configure_motion,
+    feed_timed_motion,
+    record_floor,
+)
 from lib.recording_session import RecordingSession
 
 USE_PCB = False
@@ -237,7 +243,6 @@ camera = None
 hardware_controller = None
 peer = None
 recording_session = None
-last_pose_time = None
 display = None
 startup_stage = "OTHER"
 
@@ -364,6 +369,7 @@ try:
     feed_imu_yaw_prior(hardware_controller)
 
     lidar.start_coordinates(2430, 1820, use_pcb=USE_PCB)
+    configure_motion(lidar, use_pcb=USE_PCB)
     line_sensor_feed = LineSensorFeed(use_pcb=USE_PCB)
     if line_sensor_feed.error:
         print(line_sensor_feed.error)
@@ -371,18 +377,14 @@ try:
     startup_stage = "LIDAR"
     status.update(bot_mode.name, False, "STARTING", "FIRST POSE")
     print("Waiting for first pose estimate...")
-    last_wait_time = time.monotonic()
     while not lidar.is_coordinates_ready():
         if enter_pressed():
             print("Shutdown requested, exiting.")
             raise KeyboardInterrupt
         feed_imu_yaw_prior(hardware_controller)
-        now = time.monotonic()
-        omega = hardware_controller.get_gyro_z_deg_s()
-        vx, vy = hardware_controller.get_measured_body_velocity_mm_s(hardware_controller.get_yaw() or 0.0)
-        lidar.predict_odometry(vx, vy, omega if omega is not None else 0.0, now - last_wait_time)
+        feed_timed_motion(lidar, hardware_controller)
         line_sensor_feed.update(lidar, hardware_controller)
-        last_wait_time = now
+        record_floor(lidar)
         time.sleep(0.1)
 
     if args.record_session is not None:
@@ -447,7 +449,6 @@ try:
     last_ball_y = None
     last_camera_frame_id = camera.frame_id
     last_camera_bot_positions = []
-    last_pose_time = time.monotonic()
 
     fps_monitor = None
     if args.fps:
@@ -474,6 +475,7 @@ try:
         print("FPS monitoring enabled")
 
     paused_yaw_sampler = RollingYawSampler()
+    paused_yaw_reference_set = False
     next_paused_yaw_sample_time = time.monotonic()
     last_paused_imu_count = -1
     last_imu_recovery_generation = -1
@@ -510,6 +512,7 @@ try:
         status.update(bot_mode.name, run)
         if (was_run and not run) or (was_requested_run and not requested_run):
             paused_yaw_sampler.reset()
+            paused_yaw_reference_set = False
             next_paused_yaw_sample_time = time.monotonic()
         if not run:
             steering_state = False
@@ -518,36 +521,27 @@ try:
             generation = health["imu_recovery_generation"]
             if generation != last_imu_recovery_generation or not health["imu_healthy"]:
                 paused_yaw_sampler.reset()
+                paused_yaw_reference_set = False
             last_imu_recovery_generation = generation
             if not health["imu_healthy"]:
                 lidar.clear_imu_yaw()
-            if now >= next_paused_yaw_sample_time:
+            if not paused_yaw_reference_set and now >= next_paused_yaw_sample_time:
                 count = hardware_controller.imu_update_count
                 if health["imu_healthy"] and count != last_paused_imu_count:
                     sampled_yaw = paused_yaw_sampler.add(hardware_controller.get_raw_imu_yaw())
                     if sampled_yaw is not None:
                         startup_yaw = sampled_yaw
                         hardware_controller.set_startup_yaw(startup_yaw)
+                        paused_yaw_reference_set = True
                         imu_pause.rezeroed(requested_run, hardware_controller.health())
                         feed_imu_yaw_prior(hardware_controller)
                 last_paused_imu_count = count
                 next_paused_yaw_sample_time = now + STARTUP_YAW_SAMPLE_INTERVAL
-        now_pose = time.monotonic()
-        dt_pose = now_pose - last_pose_time
-        last_pose_time = now_pose
-        gyro_z = hardware_controller.get_gyro_z_deg_s()
-        omega = gyro_z if gyro_z is not None else 0.0
         yaw = hardware_controller.get_yaw()
         feed_imu_yaw_prior(hardware_controller)
-        vx, vy = 0.0, 0.0
-        if hardware_controller is not None:
-            yaw_for_odom = yaw if yaw is not None else 0.0
-            # Fused-pose speed agreement is diagnostic, not a velocity scale.
-            vx, vy = hardware_controller.get_measured_body_velocity_mm_s(
-                yaw_for_odom
-            )
-        lidar.predict_odometry(vx, vy, omega, dt_pose)
+        feed_timed_motion(lidar, hardware_controller)
         line_sensor_feed.update(lidar, hardware_controller)
+        record_floor(lidar)
 
         if run:
             _logic_loop_count += 1
@@ -805,6 +799,7 @@ finally:
             if status is not None:
                 status.report("RECORDING", exc)
     try:
+        close_motion_capture(lidar)
         lidar.shutdown()
     except Exception as exc:
         print(f"Warning: failed to shut down lidar cleanly: {exc}")

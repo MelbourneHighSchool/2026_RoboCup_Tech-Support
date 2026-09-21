@@ -169,7 +169,7 @@ static void resumed_scan(bool enabled) {
         return score_pose(p.x,p.y,p.yaw_deg,obs.data(),obs.size(),2430,1820,6000);
     };
     double ratio = std::exp(likelihood(prior[a])-likelihood(prior[b]));
-    if (enabled) ratio *= prior[a].weight/prior[b].weight;
+    ratio *= prior[a].weight/prior[b].weight;
     assert(std::abs(g_particles[a].weight/g_particles[b].weight-ratio) < 0.0001);
 }
 

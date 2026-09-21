@@ -15,6 +15,7 @@ inline double scan_midpoint_s(std::uint64_t first_sample_us, std::size_t count,
     const double midpoint =
         (static_cast<double>(first_sample_us) + (count - 1) * us_per_sample * 0.5)
         * 1e-6;
-    return std::isfinite(midpoint) && midpoint <= retrieval_time_s
+    const double last=(static_cast<double>(first_sample_us)+(count-1)*us_per_sample)*1e-6;
+    return std::isfinite(midpoint) && last <= retrieval_time_s
         ? midpoint : -1.0;
 }

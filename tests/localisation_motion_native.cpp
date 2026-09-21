@@ -53,6 +53,8 @@ int main() {
     assert(scan_midpoint_s(1000000, 0, 100.0, 1.2) < 0);
     assert(scan_midpoint_s(1000000, 1001, 0.0, 1.2) < 0);
     assert(scan_midpoint_s(1000000, 1001, 100.0, 1.0) < 0);
+    // A valid midpoint alone is insufficient if the reconstructed scan end is future-dated.
+    assert(scan_midpoint_s(1000000, 1001, 100.0, 1.06) < 0);
     assert(scan_midpoint_s(1000000, 1001,
                           std::numeric_limits<double>::quiet_NaN(), 1.2) < 0);
 

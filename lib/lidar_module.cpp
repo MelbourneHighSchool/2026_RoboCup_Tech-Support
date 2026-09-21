@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 #include <stdexcept>
+#include <deque>
 
 #include "localisation.h"
 #include "scan_timing.h"
@@ -36,12 +37,11 @@ static std::thread g_scan_thread;
 static LidarScanMode g_scan_mode = {};
 static std::mutex g_data_mutex;
 
-struct ScanPoint {
-    float angle_deg;
-    float distance_mm;
-    int quality;
-    bool hit;
-};
+using ScanPoint = LocScanPoint;
+struct CapturedScan { double time, received; std::vector<ScanPoint> points; };
+static bool g_capture_enabled=false;
+static std::deque<CapturedScan> g_capture_scans;
+static unsigned long long g_capture_dropped=0;
 
 static std::vector<ScanPoint> g_latest_scan;
 static double g_latest_scan_time_s = 0.0;
@@ -83,14 +83,15 @@ static void scan_thread_func() {
         const double scan_end_time_s = monotonic_time_s();
 
         if (SL_IS_OK(op_result)) {
-            const double midpoint_s = scan_midpoint_s(
-                first_sample_us, count, g_scan_mode.us_per_sample, scan_end_time_s);
+            const double midpoint_s = count < _countof(nodes) ? scan_midpoint_s(
+                first_sample_us, count, g_scan_mode.us_per_sample, scan_end_time_s) : -1;
             if (midpoint_s < 0.0 && !reported_bad_timestamp) {
                 std::fprintf(stderr, "LIDAR: invalid acquisition timestamp; "
                              "scan excluded from localisation\n");
             }
             reported_bad_timestamp = midpoint_s < 0.0;
-            g_driver->ascendScanData(nodes, count);
+            // The SDK buffer is in acquisition order. ascendScanData would sort
+            // and interpolate angles, destroying timing and genuine miss bearings.
 
             std::vector<ScanPoint> new_scan;
             new_scan.reserve(count);
@@ -103,7 +104,9 @@ static void scan_thread_func() {
                              >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
 
                 // Keep explicit no-return bearings so MCL can model grazing misses.
-                if (nodes[i].dist_mm_q2 == 0 || pt.quality < MIN_BEAM_QUALITY) {
+                pt.time_s = midpoint_s > 0
+                    ? first_sample_us*1e-6 + i*g_scan_mode.us_per_sample*1e-6 : -1;
+                if (nodes[i].dist_mm_q2 == 0) {
                     pt.hit = false;
                     pt.distance_mm = 0.0f;
                     pt.quality = 0;
@@ -115,6 +118,10 @@ static void scan_thread_func() {
 
             {
                 std::lock_guard<std::mutex> lock(g_data_mutex);
+                if (g_capture_enabled) {
+                    if (g_capture_scans.size() >= 64) { g_capture_scans.pop_front(); ++g_capture_dropped; }
+                    g_capture_scans.push_back({midpoint_s,scan_end_time_s,new_scan});
+                }
                 g_latest_scan = std::move(new_scan);
                 g_latest_scan_time_s = midpoint_s;
                 g_scan_ready.store(true);
@@ -129,7 +136,7 @@ static void scan_thread_func() {
 static void localization_thread_func() {
     std::uint64_t last_processed_generation = 0;
     while (g_loc_running.load()) {
-        if (!g_scan_ready.load() || !loc_scan_updates_allowed()) {
+        if (!g_scan_ready.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -161,14 +168,16 @@ static void localization_thread_func() {
             loc_scan[i].distance_mm = scan_copy[i].distance_mm;
             loc_scan[i].quality = scan_copy[i].quality;
             loc_scan[i].hit = scan_copy[i].hit;
+            loc_scan[i].time_s = scan_copy[i].time_s;
         }
 
         loc_update_scan(loc_scan.data(), (int)loc_scan.size(),
                         MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY,
                         scan_time_s);
-        last_processed_generation = generation;
+        // IMU/wheel samples can arrive slightly later than the scan thread.
+        if (loc_get_deskew_status().reason != "waiting_motion") last_processed_generation = generation;
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
@@ -277,7 +286,7 @@ static py::array_t<float> get_scan_numpy() {
 
     size_t hit_count = 0;
     for (const auto& pt : g_latest_scan) {
-        if (pt.hit) hit_count++;
+        if (pt.hit && pt.quality >= MIN_BEAM_QUALITY) hit_count++;
     }
 
     if (hit_count == 0) {
@@ -291,7 +300,7 @@ static py::array_t<float> get_scan_numpy() {
 
     size_t out = 0;
     for (const auto& pt : g_latest_scan) {
-        if (!pt.hit) continue;
+        if (!pt.hit || pt.quality < MIN_BEAM_QUALITY) continue;
         buf(out, 0) = pt.angle_deg;
         buf(out, 1) = pt.distance_mm;
         buf(out, 2) = (float)pt.quality;
@@ -306,7 +315,7 @@ static py::list get_scan_list() {
 
     py::list result;
     for (const auto& pt : g_latest_scan) {
-        if (!pt.hit) continue;
+        if (!pt.hit || pt.quality < MIN_BEAM_QUALITY) continue;
         result.append(
             py::make_tuple(pt.angle_deg, pt.distance_mm, pt.quality));
     }
@@ -318,7 +327,7 @@ static float get_distance_at_angle(float target_angle) {
 
     bool any_hit = false;
     for (const auto& pt : g_latest_scan) {
-        if (pt.hit) {
+        if (pt.hit && pt.quality >= MIN_BEAM_QUALITY) {
             any_hit = true;
             break;
         }
@@ -332,7 +341,7 @@ static float get_distance_at_angle(float target_angle) {
     float min_angle_diff = 360.0f;
 
     for (const auto& pt : g_latest_scan) {
-        if (!pt.hit) continue;
+        if (!pt.hit || pt.quality < MIN_BEAM_QUALITY) continue;
 
         float angle = std::fmod(pt.angle_deg, 360.0f);
         if (angle < 0) angle += 360.0f;
@@ -359,7 +368,7 @@ static py::list get_sector_distances(int num_sectors) {
     std::vector<float> min_distances(num_sectors, -1.0f);
 
     for (const auto& pt : g_latest_scan) {
-        if (!pt.hit) continue;
+        if (!pt.hit || pt.quality < MIN_BEAM_QUALITY) continue;
 
         float angle = std::fmod(pt.angle_deg, 360.0f);
         if (angle < 0) angle += 360.0f;
@@ -385,7 +394,7 @@ static int get_scan_count() {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     int hit_count = 0;
     for (const auto& pt : g_latest_scan) {
-        if (pt.hit) hit_count++;
+        if (pt.hit && pt.quality >= MIN_BEAM_QUALITY) hit_count++;
     }
     return hit_count;
 }
@@ -504,11 +513,11 @@ static void test_mcl_predict(float vx_mm_s, float vy_mm_s,
     loc_predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
 }
 
-static void test_mcl_update_scan(const py::list& points) {
+static std::vector<LocScanPoint> parse_scan(const py::list& points) {
     std::vector<LocScanPoint> scan;
     scan.reserve(py::len(points));
     for (const auto& item : points) {
-        py::tuple t = item.cast<py::tuple>();
+        py::sequence t = item.cast<py::sequence>();
         if (py::len(t) < 4) {
             throw std::invalid_argument(
                 "Each scan point must be (angle_deg, distance_mm, quality, hit)");
@@ -518,10 +527,15 @@ static void test_mcl_update_scan(const py::list& points) {
         pt.distance_mm = t[1].cast<float>();
         pt.quality = t[2].cast<int>();
         pt.hit = t[3].cast<bool>();
+        if (py::len(t) >= 5) pt.time_s = t[4].cast<double>();
         scan.push_back(pt);
     }
+    return scan;
+}
+static void test_mcl_update_scan(const py::list& points, double time_s) {
+    const auto scan=parse_scan(points);
     loc_update_scan(scan.data(), (int)scan.size(),
-                    MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY);
+                    MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY,time_s);
 }
 
 static void test_mcl_reset() {
@@ -529,6 +543,57 @@ static void test_mcl_reset() {
 }
 
 PYBIND11_MODULE(lidar, m) {
+    m.def("configure_deskew", &loc_configure_deskew, py::arg("mode"),
+          py::arg("forward_mm")=0, py::arg("left_mm")=0, py::arg("yaw_deg")=0);
+    m.def("feed_motion", [](py::dict sample) {
+        std::vector<motion::Value> yaw,gyro;
+        for (const auto& p : sample["yaw"].cast<std::vector<std::pair<double,double>>>())
+            yaw.push_back({p.first,p.second});
+        for (const auto& p : sample["gyro"].cast<std::vector<std::pair<double,double>>>())
+            gyro.push_back({p.first,p.second});
+        const double vx=sample["vx"].cast<double>(), vy=sample["vy"].cast<double>();
+        const double time=sample["timestamp_s"].cast<double>(), span=sample["read_span_s"].cast<double>();
+        const auto epoch=sample["epoch"].cast<std::uint64_t>();
+        py::gil_scoped_release release;
+        loc_feed_motion(vx,vy,time,span,yaw,gyro,epoch);
+    });
+    m.def("get_deskew_status", []() {
+        const auto s=loc_get_deskew_status(); py::dict d;
+        d["mode"]=s.mode; d["reason"]=s.reason; d["sequence"]=s.sequence;
+        d["scan_time_s"]=s.scan_time_s; d["duration_s"]=s.duration_s; d["age_s"]=s.age_s;
+        d["processing_ms"]=s.processing_ms; d["max_translation_mm"]=s.max_translation_mm;
+        d["max_rotation_deg"]=s.max_rotation_deg; d["raw_residual_mm"]=s.raw_residual_mm;
+        d["corrected_residual_mm"]=s.corrected_residual_mm;
+        d["history_ok"]=s.history_ok; d["accepted"]=s.accepted;
+        return d;
+    });
+    m.def("enable_scan_capture", [](bool enabled) {
+        std::lock_guard<std::mutex> lock(g_data_mutex);
+        g_capture_enabled=enabled; g_capture_scans.clear(); g_capture_dropped=0;
+    });
+    m.def("drain_scan_capture", [](bool stop) {
+        std::deque<CapturedScan> scans; unsigned long long dropped;
+        { std::lock_guard<std::mutex> lock(g_data_mutex);
+          if (stop) g_capture_enabled=false;
+          scans.swap(g_capture_scans); dropped=g_capture_dropped; }
+        py::list output;
+        for (const auto& scan : scans) {
+            py::dict row; py::list points;
+            for (const auto& p : scan.points)
+                points.append(py::make_tuple(p.angle_deg,p.distance_mm,p.quality,p.hit,p.time_s));
+            row["time_s"]=scan.time; row["received_s"]=scan.received; row["points"]=points;
+            output.append(row);
+        }
+        return py::make_tuple(output,dropped);
+    }, py::arg("stop")=false);
+    m.def("preview_scan", [](const py::list& points, double time_s) {
+        return loc_preview_scan(parse_scan(points),time_s);
+    });
+    m.def("set_replay_time", [](double time) {
+        if (g_running || g_loc_running) throw std::runtime_error("Replay clock requires offline mode");
+        loc_set_replay_time(time);
+    });
+    m.def("seed", &loc_seed);
     m.def("set_line_readings", &loc_set_line_readings,
           py::arg("colours"), py::arg("timestamp_s"),
           "Store 32 classified PCB readings for optional floor-colour scoring");
@@ -641,6 +706,6 @@ PYBIND11_MODULE(lidar, m) {
           py::arg("omega_deg_s"), py::arg("dt_s"),
           "Propagate synthetic MCL with odometry.");
     m.def("test_mcl_update_scan", &test_mcl_update_scan,
-          py::arg("points"),
+          py::arg("points"), py::arg("time_s")=-1,
           "Feed synthetic scan points: list of (angle_deg, distance_mm, quality, hit).");
 }

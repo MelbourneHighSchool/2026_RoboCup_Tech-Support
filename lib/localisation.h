@@ -5,13 +5,36 @@
 #include <array>
 #include <string>
 #include <vector>
+#include "motion_history.h"
 
 struct LocScanPoint {
     float angle_deg;
     float distance_mm;  // valid only when hit is true
     int quality;
     bool hit;           // false = explicit no-return / miss at this bearing
+    double time_s;      // monotonic acquisition time; -1 for untimed synthetic data
+    LocScanPoint(float a=0, float d=0, int q=0, bool h=false, double t=-1)
+        : angle_deg(a), distance_mm(d), quality(q), hit(h), time_s(t) {}
 };
+
+struct LocDeskewStatus {
+    std::string mode = "off", reason = "no_scan";
+    double scan_time_s = 0, duration_s = 0, age_s = 0, processing_ms = 0;
+    double max_translation_mm = 0, max_rotation_deg = 0;
+    double raw_residual_mm = -1, corrected_residual_mm = -1;
+    bool history_ok = false, accepted = false;
+    std::uint64_t sequence = 0;
+};
+void loc_configure_deskew(const std::string& mode, double forward=0, double left=0, double yaw=0);
+LocDeskewStatus loc_get_deskew_status();
+// Each IMU array contains (monotonic seconds, value), in acquisition order.
+void loc_feed_motion(double vx, double vy, double time_s, double read_span_s,
+                     const std::vector<motion::Value>& yaw,
+                     const std::vector<motion::Value>& gyro, std::uint64_t epoch);
+void loc_set_replay_time(double time_s); // -1 restores real time; offline only
+void loc_seed(unsigned seed);
+std::vector<std::array<double, 5>> loc_preview_scan(const std::vector<LocScanPoint>& points,
+                                                  double time_s);
 
 struct LocPose {
     float x;

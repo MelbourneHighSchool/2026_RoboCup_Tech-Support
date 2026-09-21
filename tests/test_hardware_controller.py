@@ -73,6 +73,10 @@ class HardwareControllerTests(unittest.TestCase):
                              {"kick_pulse_length": -0.01}, {"kick_cooldown": float("nan")}):
                 with self.assertRaises(ValueError):
                     create([25, 26, 27, 28], **settings)
+            for settings in ({"motor_hz": 0}, {"pcb_hz": 201},
+                             {"imu_poll_hz": float("nan")}, {"motor_hz": float("inf")}):
+                with self.assertRaisesRegex(ValueError, "Polling rate"):
+                    create([25, 26, 27, 28], **settings)
             # Reordered calibration is accepted by address and reaches device open.
             for pin in (-2, 28):
                 with self.assertRaisesRegex(ValueError, "kicker|Kicker"):

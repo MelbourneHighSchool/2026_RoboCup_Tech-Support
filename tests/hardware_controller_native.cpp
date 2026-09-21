@@ -140,6 +140,13 @@ void imu_protocol() {
     close(*sample.gyro_z, 180 / std::acos(-1));
     close((*sample.quaternion)[2], std::sin(-40 * std::acos(-1) / 180), 1.0/16384);
     assert(sample.update_count == 1);
+    const auto history=imu.history();
+    assert(history.yaw.size()==1 && history.gyro.size()==1);
+    close(history.yaw.back().second,90,0.01);
+    close(history.gyro.back().second,180/std::acos(-1));
+    const double sampled_now=std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    assert(history.yaw.back().first <= sampled_now && sampled_now-history.yaw.back().first < 0.1);
     // A failed payload read must never publish a partial quaternion.
     state->imu.yaw_report(50);
     state->imu.fail_payload = true;
@@ -148,6 +155,7 @@ void imu_protocol() {
     state->imu.yaw_report(-179);
     imu.service();
     imu.set_startup_yaw(179);
+    assert(imu.history().epoch>history.epoch && imu.history().yaw.empty() && imu.history().gyro.empty());
     close(*imu.snapshot().yaw, -2, 0.01);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(110));
@@ -160,7 +168,9 @@ void imu_protocol() {
     close(sample.last_yaw, -2, 0.01);
 
     state->imu.reset();
+    const auto epoch_before_reset=imu.history().epoch;
     imu.service();
+    assert(imu.history().epoch>epoch_before_reset && imu.history().gyro.empty());
     sample = imu.snapshot();
     assert(!sample.yaw && !sample.gyro_z);
     assert(state->imu.feature_count(0x08) == 2 && state->imu.feature_count(0x02) == 2);
@@ -181,12 +191,12 @@ void imu_protocol() {
     imu.close();
     imu.close();
     assert(!imu.snapshot().yaw);
-    LinuxBno08x replacement(wire, 0x4a, 20);
+    LinuxBno08x replacement(wire, 0x4a, 2.5);
     replacement.initialize();
     // Clear earlier 10 ms commands before checking the new report interval.
     for (size_t i = state->imu.writes.size() - 2; i < state->imu.writes.size(); ++i) {
         const auto& command = state->imu.writes[i];
-        assert(command[9] == 0x20 && command[10] == 0x4e); // 20000 us
+        assert(command[9] == 0xc4 && command[10] == 0x09); // 2500 us, not truncated to 2000
     }
 }
 void native_yaw_control() {
@@ -235,6 +245,9 @@ void native_yaw_control() {
     close(controller.current_speed(), 0);
     const auto velocity = controller.get_measured_body_velocity_mm_s(0);
     close(velocity.first, 0); close(velocity.second, 0);
+    const auto timed_velocity=controller.get_localisation_sample();
+    assert(timed_velocity.timestamp_s>0 && timed_velocity.read_span_s>=0);
+    close(timed_velocity.vx,0); close(timed_velocity.vy,0);
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         assert(has_packet(*state, 29, {0x11, 0, 0, 0, 0}));
@@ -297,6 +310,30 @@ void kinematics() {
     close(saturated[0], -1000);
     close(saturated[1], 800);
 }
+void configurable_polling() {
+    double slow_motor = 0, slow_pcb = 0;
+    for (double hz : {25.0, 200.0}) {
+        auto state = std::make_shared<State>();
+        state->imu.auto_reports = true;
+        HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state),
+            0x4a, 2.5, -1, "", nullptr, 8, 1, 0.02, 0.5, nullptr, true, hz, hz, 500);
+        const auto before = controller.timing_diagnostics();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        controller.stop();
+        auto after = controller.timing_diagnostics();
+        const auto count = [&](const char* key) {
+            auto entry = before.find(key);
+            return after[key] - (entry == before.end() ? 0 : entry->second);
+        };
+        if (hz == 25) {
+            slow_motor = count("motor_count"); slow_pcb = count("pcb_count");
+            assert(slow_motor > 0 && slow_pcb > 0);
+        } else {
+            assert(count("motor_count") > slow_motor * 3);
+            assert(count("pcb_count") > slow_pcb * 3);
+        }
+    }
+}
 void lifecycle(int count) {
     auto state = std::make_shared<State>();
     HardwareController controller(calibration(count), config, "unused", std::make_unique<FakeWire>(state),
@@ -336,6 +373,10 @@ void lifecycle(int count) {
     throws([&] { controller.move(0, 500, 0, 0, 0); });
     throws([&] { controller.get_measured_body_velocity_mm_s(0); });
     assert(controller.loop_count() == ticks);
+    const auto timing = controller.timing_diagnostics();
+    assert(timing.at("motor_count") == ticks);
+    assert(timing.at("motor_work_s") > 0);
+    assert(timing.at("imu_poll_count") > 0);
     std::lock_guard<std::mutex> lock(state->mutex);
     for (int i = 0; i < count; ++i) {
         assert(state->speed[25+i] == 0);
@@ -620,6 +661,7 @@ int main() {
     dynamic_current_limits();
     imu_protocol();
     kinematics();
+    configurable_polling();
     lifecycle(4);
     lifecycle(5);
     capped_acceleration();

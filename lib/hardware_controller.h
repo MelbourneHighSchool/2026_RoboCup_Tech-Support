@@ -9,6 +9,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -55,18 +56,20 @@ std::array<double, 4> calculate_drive_rpms(const Command& command, const DriveCo
 std::pair<double, double> body_velocity(const std::array<double, 4>& rpms, double diameter);
 
 // Owns motor I/O and its native drive thread. Future hardware belongs here.
+
 class HardwareController {
 public:
     HardwareController(const std::vector<MotorCalibration>& calibration, DriveConfig config,
                        const std::string& device = "/dev/i2c-1",
                        std::unique_ptr<TwoWire> transport = nullptr,
-                       int imu_address = 0x4a, int imu_report_interval_ms = 10,
+                       int imu_address = 0x4a, double imu_report_interval_ms = 10,
                        int kicker_pin = -1, const std::string& kicker_gpiochip = "",
                        std::unique_ptr<KickerOutput> kicker_output = nullptr,
                        double drive_motor_current_limit = 8.0,
                        double dribbler_motor_current_limit = 1.0,
                        double kick_pulse_length = 0.02, double kick_cooldown = 0.5,
-                       std::shared_ptr<StatusDisplay> display = nullptr, bool use_pcb = false);
+                       std::shared_ptr<StatusDisplay> display = nullptr, bool use_pcb = false,
+                       double motor_hz = 50, double pcb_hz = 50, double imu_poll_hz = 500);
     ~HardwareController();
     HardwareController(const HardwareController&) = delete;
     HardwareController& operator=(const HardwareController&) = delete;
@@ -81,10 +84,16 @@ public:
     HardwareHealth health() const;
     PcbSnapshot get_pcb_snapshot() const;
     std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);
+    struct LocalisationSample {
+        double vx, vy, timestamp_s, read_span_s;
+        LinuxBno08x::History imu;
+    };
+    LocalisationSample get_localisation_sample();
     double get_dribbler_rpm();
     void stop();
     void set_drive_current_limits(double constant_speed_amps, double acceleration_amps);
     uint64_t loop_count() const { return loop_count_.load(); }
+    std::map<std::string, double> timing_diagnostics() const;
     double current_speed() const;
     double current_direction() const;
 private:
@@ -97,6 +106,10 @@ private:
     void fail(const std::string& message, const std::string& source = "MOTOR", int address = -1);
     void check_imu_locked(); // state_mutex_; never acquires the bus.
     void motor_operation(size_t index, const std::function<void()>& operation);
+    void record_timing(const std::string& name, double wait_s, double work_s);
+    mutable std::mutex timing_mutex_;
+    std::map<std::string, double> timing_;
+    std::chrono::steady_clock::duration motor_period_, pcb_period_, imu_poll_period_;
     DriveConfig config_;
     std::shared_ptr<TwoWire> wire_;
     std::shared_ptr<StatusDisplay> display_;

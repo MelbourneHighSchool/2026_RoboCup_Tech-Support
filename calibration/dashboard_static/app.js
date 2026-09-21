@@ -133,7 +133,7 @@ $('saveGoals').onclick = async () => {
 };
 for (const [id, action] of [['revertGoals','revert_goals'],['defaultGoals','default_goals']]) $(id).onclick = async () => { try { clearTimeout(goalTimer); editUntil = 0; await api(action); } catch(e) { message(e.message); } };
 $('localise').onclick = async () => {
-  try { await api($('localise').dataset.running === 'true' ? 'stop_localise' : 'localise'); }
+  try { await api($('localise').dataset.running === 'true' ? 'stop_localise' : 'localise', Object.fromEntries([...document.querySelectorAll('.poll-rate')].map(el => [el.id, Number(el.value)]))); }
   catch (e) { message(e.message); }
 };
 handle('calibrate', 'calibrate', () => ({addresses:motorAddresses(), wheels_clear:$('wheelsClear').checked}));
@@ -253,6 +253,7 @@ function render(s) {
   $('modelSize').disabled = !token || s.camera.status === 'switching model' || s.camera.models.length < 2;
   const localisationRunning = s.hardware.localisation != null ||
     ['queued localise','starting localise','monitoring','driving','stopping localisation'].includes(s.hardware.mode);
+  for (const el of document.querySelectorAll('.poll-rate')) el.disabled = localisationRunning || !token;
   $('localise').dataset.running = String(localisationRunning);
   $('localise').textContent = localisationRunning ? 'Stop localisation' : 'Start localisation';
   $('localise').classList.toggle('danger', localisationRunning);
@@ -279,6 +280,21 @@ function render(s) {
   readings($('motorProgress'), [['State',s.hardware.mode],['Active driver', calibration?.address ?? '—'],['Elapsed',fmt(calibration?.elapsed_s)+' s'],['Completed',calibration?.complete ? 'Saved':'—'],['Error',s.hardware.error ?? 'none']]);
   for (const motor of calibration?.results ?? []) { const p=document.createElement('p'); p.textContent=`Address ${motor.address}: ELECANGLEOFFSET ${motor.elecangleoffset} · SINCOSCENTRE ${motor.sincoscentre}`; $('motorProgress').append(p); }
   const l=s.hardware.localisation;
+  const timing=l?.polling;
+  if(timing?.window_s > 0) {
+    const m=timing.measured, n=timing.native, q=timing.requested;
+    readings($('pollingReadings'), [
+      ['Window',fmt(timing.window_s,2)+' s'],
+      ...[['Motor commands','motor','motor_hz'],['Wheel odometry','odometry','odometry_hz'],['Yaw reports','yaw','imu_hz'],['Gyro reports','gyro','imu_hz'],['IMU polling','imu_poll','imu_poll_hz'],['PCB reads','pcb','pcb_hz']].map(([label,key,requested])=>[label,`${fmt(m[key+'_hz'])} / ${q[requested]} Hz measured / requested`]),
+      ['Motor bus wait · mean / max',`${fmt(m.motor_wait_ms,3)} / ${fmt(1000*(n.motor_max_wait_s??0),3)} ms`],
+      ['Motor writes · mean / max',`${fmt(m.motor_work_ms,3)} / ${fmt(1000*(n.motor_max_work_s??0),3)} ms`],
+      ['Motor overruns · window / total',`${m.motor_overruns} / ${n.motor_overruns??0}`],
+      ['Odometry bus wait / read · means',`${fmt(m.odometry_wait_ms,3)} / ${fmt(m.odometry_work_ms,3)} ms`],
+      ['IMU bus wait / service · means',`${fmt(m.imu_poll_wait_ms,3)} / ${fmt(m.imu_poll_work_ms,3)} ms`],
+      ['PCB read incl. wait · mean / max',`${fmt(m.pcb_work_ms,3)} / ${fmt(1000*(n.pcb_max_work_s??0),3)} ms`],
+      ['Yaw / gyro receipt age',`${n.yaw_age_s>=0?fmt(n.yaw_age_s*1000):'—'} / ${n.gyro_age_s>=0?fmt(n.gyro_age_s*1000):'—'} ms`]
+    ]);
+  } else $('pollingReadings').textContent=l?'Collecting a measurement window…':'Start a test to measure rates.';
   if(l) {
     const p=l.pose, o=l.odometry, r=l.recovery, c=l.correction;
     readings($('localisationReadings'), [

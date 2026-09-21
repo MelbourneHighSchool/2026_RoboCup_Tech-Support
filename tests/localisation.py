@@ -13,11 +13,18 @@ viewing with ``python simulate.py --connect 127.0.0.1:8765``.
 
 import argparse
 import math
+import os
 import queue
 import threading
 import time
 
 from lib.line_sensors import LineSensorFeed
+from lib.localisation_motion import (
+    close_motion_capture,
+    configure_motion,
+    feed_timed_motion,
+    record_floor,
+)
 from lib.localisation_service import (
     LidarVelocityEstimator,
     capture_startup_yaw,
@@ -79,6 +86,8 @@ def parse_args():
         "--motion-noise", type=float, default=0.30,
         help="Speed-dependent motion noise coefficient in sqrt(s); 0 isolates the timestamp fix.",
     )
+    parser.add_argument("--deskew", choices=("off", "rotation", "full"), default="full")
+    parser.add_argument("--record-motion", help="Write raw localisation JSONL for offline comparison")
     args = parser.parse_args()
     if not math.isfinite(args.motion_noise) or args.motion_noise < 0:
         parser.error("--motion-noise must be finite and nonnegative")
@@ -108,6 +117,12 @@ def stream_pose(stream_enabled, send_log_module, x_pos, y_pos, yaw):
 
 
 def print_localisation_status(lidar_module, odometry=None):
+    deskew = lidar_module.get_deskew_status()
+    print(f"[DESKEW] {deskew['mode']} {deskew['reason']} "
+          f"scan={deskew['duration_s']*1000:.1f}ms age={deskew['age_s']*1000:.1f}ms "
+          f"correction={deskew['max_translation_mm']:.1f}mm/{deskew['max_rotation_deg']:.2f}deg "
+          f"residual={deskew['raw_residual_mm']:.1f}->{deskew['corrected_residual_mm']:.1f}mm "
+          f"processing={deskew['processing_ms']:.1f}ms")
     """Print a readable snapshot of pose, odometry, and filter health."""
     x_pos, y_pos, yaw, confidence, ok = lidar_module.get_coordinates_info()
     scans_enabled = lidar_module.scan_updates_enabled()
@@ -501,20 +516,20 @@ def main():
         lidar.set_motion_noise(args.motion_noise)
         print(f"Motion noise coefficient: {args.motion_noise:g} sqrt(s)")
         lidar.start_coordinates(PITCH_X, PITCH_Y, use_pcb=USE_PCB)
+        os.environ["SOCCER_DESKEW"] = args.deskew
+        if args.record_motion:
+            os.environ["SOCCER_LOCALISATION_RECORD"] = args.record_motion
+        configure_motion(lidar, use_pcb=USE_PCB, motion_noise=args.motion_noise)
 
         print("Waiting for first pose estimate...")
         last_pose_time = time.monotonic()
         last_status_print = 0.0
         while not lidar.is_coordinates_ready():
             now = time.monotonic()
-            omega = 0.0
-            gyro_z = imu.get_gyro_z_deg_s()
-            if gyro_z is not None:
-                omega = gyro_z
             feed_imu_yaw_prior(lidar, imu, startup_yaw)
-            vx, vy = imu.get_measured_body_velocity_mm_s(imu.get_yaw() or 0.0)
-            lidar.predict_odometry(vx, vy, omega, now - last_pose_time)
+            feed_timed_motion(lidar, imu)
             LINE_SENSOR_FEED.update(lidar, imu)
+            record_floor(lidar)
             last_pose_time = now
             if now - last_status_print >= 0.5:
                 print_localisation_status(lidar)
@@ -596,6 +611,7 @@ def main():
         if imu is not None:
             imu.stop()
         try:
+            close_motion_capture(lidar)
             lidar.shutdown()
         except Exception as exc:
             print(f"Warning: failed to shut down lidar cleanly: {exc}")

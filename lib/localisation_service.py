@@ -5,6 +5,12 @@ import time
 from dataclasses import asdict, dataclass
 
 from lib.line_sensors import LineSensorFeed
+from lib.localisation_motion import (
+    close_motion_capture,
+    configure_motion,
+    feed_timed_motion,
+    record_floor,
+)
 
 USE_PCB = False
 
@@ -133,13 +139,14 @@ def predict_odometry(
     *,
     apply_trust=False,
     line_feed=None,
+    clock=time.monotonic,
 ):
     """Feed raw wheel and gyro measurements into MCL, retaining diagnostic trust.
 
     ``apply_trust=True`` restores legacy scaling for comparison tests only.
     Fused-pose velocity is not independent evidence of wheel slip.
     """
-    now = time.monotonic()
+    now = clock()
     if movement_controller is None and hasattr(imu, "get_measured_body_velocity_mm_s"):
         movement_controller = imu
     dt = now - last_pose_time
@@ -147,17 +154,24 @@ def predict_odometry(
     gyro_z = imu.get_gyro_z_deg_s()
     if gyro_z is not None:
         omega = gyro_z
-    feed_imu_yaw_prior(lidar_module, imu, startup_yaw)
+    timed_sample = None
+    if hasattr(movement_controller, "get_localisation_sample") and hasattr(lidar_module, "feed_motion"):
+        timed_sample = movement_controller.get_localisation_sample()
+    else:
+        feed_imu_yaw_prior(lidar_module, imu, startup_yaw)
 
     vx, vy = 0.0, 0.0
     vx_wheel, vy_wheel = 0.0, 0.0
     lidar_vx, lidar_vy = 0.0, 0.0
     lidar_fresh = False
     trust = 1.0
-    has_wheel_odometry = movement_controller is not None and yaw_deg is not None
-    if movement_controller is not None and yaw_deg is not None:
-        vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(yaw_deg)
-        lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_deg)
+    has_wheel_odometry = movement_controller is not None and (timed_sample is not None or yaw_deg is not None)
+    if has_wheel_odometry:
+        if timed_sample is not None:
+            vx_wheel, vy_wheel = timed_sample["vx"], timed_sample["vy"]
+        else:
+            vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(yaw_deg)
+        lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_deg if yaw_deg is not None else 0)
         lidar_fresh = lidar_velocity.is_fresh(now)
         trust = compute_wheel_odometry_trust(
             vx_wheel,
@@ -170,9 +184,14 @@ def predict_odometry(
         vx = scale * vx_wheel
         vy = scale * vy_wheel
 
-    lidar_module.predict_odometry(vx, vy, omega, dt)
+    if timed_sample is not None:
+        timed_sample = {**timed_sample, "vx": vx, "vy": vy}
+        feed_timed_motion(lidar_module, movement_controller, sample=timed_sample)
+    else:
+        lidar_module.predict_odometry(vx, vy, omega, dt)
     if line_feed is not None:
         line_feed.update(lidar_module, imu)
+        record_floor(lidar_module)
     diagnostics = OdometryDiagnostics(
         dt_s=dt,
         omega_deg_s=omega,
@@ -199,6 +218,7 @@ class LocalisationSession:
     SCAN_RESUME_TIMEOUT_S = 0.5
 
     def __init__(self, lidar, imu, startup_yaw, velocity, clock=time.monotonic, *, line_feed=None, use_pcb=USE_PCB):
+        configure_motion(lidar, use_pcb=use_pcb)
         self.lidar = lidar
         self.imu = imu
         self.startup_yaw = startup_yaw
@@ -222,7 +242,7 @@ class LocalisationSession:
         now = self.clock()
         self.last_time, odometry = predict_odometry(
             self.lidar, controller, self.imu, self.startup_yaw,
-            self.velocity, self.last_yaw, self.last_time, line_feed=self.line_feed,
+            self.velocity, self.last_yaw, self.last_time, line_feed=self.line_feed, clock=self.clock,
         )
         pose = self.lidar.get_coordinates_info()
         x, y, yaw, confidence, ok = pose
@@ -287,9 +307,12 @@ class LocalisationSession:
             "recovery": list(self.lidar.get_recovery_status()),
             "odometry": asdict(odometry),
         }
+        if hasattr(self.lidar, "get_deskew_status"):
+            self.state["deskew"] = self.lidar.get_deskew_status()
         return self.state
 
     def close(self):
+        close_motion_capture(self.lidar)
         try:
             self.imu.stop()
         finally:

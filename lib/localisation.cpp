@@ -38,6 +38,8 @@ struct Observation {
     float distance_mm;
     float weight;
     bool hit;
+    double time_s = -1;
+    float origin_x = 0, origin_y = 0;
 };
 
 struct OdometryStep {
@@ -53,6 +55,13 @@ static std::vector<Particle> g_particles;
 static std::deque<OdometryStep> g_odometry_history;
 static std::mutex g_loc_mutex;
 static std::mt19937 g_rng(42);
+static motion::History g_motion;
+static bool g_timed_motion = false;
+static std::uint64_t g_motion_epoch = 0;
+static double g_pose_time = 0, g_replay_time = -1;
+static std::string g_deskew_mode = "off";
+static double g_mount_forward = 0, g_mount_left = 0, g_mount_yaw = 0;
+static LocDeskewStatus g_deskew_status;
 
 static float g_pitch_x = 2430.0f;
 static float g_pitch_y = 1820.0f;
@@ -110,17 +119,17 @@ static float wrap_angle_deg(float angle);
 static float rand_normal(float stddev);
 
 static double monotonic_time_s() {
+    if (g_replay_time >= 0) return g_replay_time;
     return std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
                                float omega_deg_s, float dt_s, bool add_noise) {
-    float yaw_rad = particle.yaw_deg * (float)(M_PI / 180.0);
-    float cos_yaw = std::cos(yaw_rad);
-    float sin_yaw = std::sin(yaw_rad);
-    float dx = (vx_mm_s * cos_yaw + vy_mm_s * sin_yaw) * dt_s;
-    float dy = (vx_mm_s * sin_yaw - vy_mm_s * cos_yaw) * dt_s;
+    motion::Transform next;
+    next.yaw = particle.yaw_deg;
+    motion::advance(next, vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
+    const float dx = next.x, dy = next.y;
     float noise_dt_scale = std::sqrt(std::max(dt_s, 0.0f));
     const float translation_sigma = add_noise
         ? std::hypot(TRANS_NOISE_MM,
@@ -143,15 +152,8 @@ static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
 
 static void rewind_particle(Particle& particle, const OdometryStep& step,
                             float dt_s) {
-    float start_yaw = wrap_angle_deg(particle.yaw_deg - step.omega_deg_s * dt_s);
-    float yaw_rad = start_yaw * (float)(M_PI / 180.0);
-    float dx = (step.vx_mm_s * std::cos(yaw_rad)
-                + step.vy_mm_s * std::sin(yaw_rad)) * dt_s;
-    float dy = (step.vx_mm_s * std::sin(yaw_rad)
-                - step.vy_mm_s * std::cos(yaw_rad)) * dt_s;
-    particle.x = std::min(std::max(particle.x - dx, 0.0f), g_pitch_x);
-    particle.y = std::min(std::max(particle.y - dy, 0.0f), g_pitch_y);
-    particle.yaw_deg = start_yaw;
+    propagate_particle(particle, step.vx_mm_s, step.vy_mm_s,
+                       step.omega_deg_s, -dt_s, false);
 }
 
 // Incidence model: |cos| below this is treated as fully grazing / expected miss.
@@ -296,6 +298,7 @@ static float score_pose(float x, float y, float yaw_deg,
                         const Observation* obs, int n,
                         float Lx, float Ly, float max_range_mm) {
     float psi = yaw_deg * (float)(M_PI / 180.0);
+    const float cp=std::cos(psi), sp=std::sin(psi);
     float log_lik = 0.0f;
     const float inv_max_range = 1.0f / std::max(max_range_mm, 1.0f);
 
@@ -303,7 +306,9 @@ static float score_pose(float x, float y, float yaw_deg,
         float theta = psi + obs[i].angle_deg * (float)(M_PI / 180.0);
         float ux = std::cos(theta);
         float uy = std::sin(theta);
-        PredictedHit pred = predict_hit(x, y, ux, uy, Lx, Ly);
+        const float ox = x + cp*obs[i].origin_x - sp*obs[i].origin_y;
+        const float oy = y + sp*obs[i].origin_x + cp*obs[i].origin_y;
+        PredictedHit pred = predict_hit(ox, oy, ux, uy, Lx, Ly);
         float abs_cos = 0.0f;
         if (pred.range_mm < 1e29f) {
             abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
@@ -341,6 +346,7 @@ static PoseStats compute_stats(float x, float y, float yaw_deg,
                                const Observation* obs, int n,
                                float Lx, float Ly) {
     float psi = yaw_deg * (float)(M_PI / 180.0);
+    const float cp=std::cos(psi), sp=std::sin(psi);
     std::vector<float> inlier_errors;
     inlier_errors.reserve(n);
     int inlier_count = 0;
@@ -357,7 +363,9 @@ static PoseStats compute_stats(float x, float y, float yaw_deg,
         float theta = psi + obs[i].angle_deg * (float)(M_PI / 180.0);
         float ux = std::cos(theta);
         float uy = std::sin(theta);
-        PredictedHit pred = predict_hit(x, y, ux, uy, Lx, Ly);
+        const float ox = x + cp*obs[i].origin_x - sp*obs[i].origin_y;
+        const float oy = y + sp*obs[i].origin_x + cp*obs[i].origin_y;
+        PredictedHit pred = predict_hit(ox, oy, ux, uy, Lx, Ly);
         float e = std::fabs(obs[i].distance_mm - pred.range_mm);
         float abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
         float visibility = wall_visibility(abs_cos, pred.range_mm);
@@ -517,6 +525,8 @@ static void inject_random_particles(float fraction) {
             sample_position(g_particles[idx], GOAL_PARTICLE_FRACTION);
         }
         g_particles[idx].yaw_deg = rand_init_yaw_deg();
+        // This is a new hypothesis: never inherit the replaced particle's
+        // accumulated evidence. The scan update normalizes it with survivors.
         g_particles[idx].weight = weight;
     }
 }
@@ -680,55 +690,25 @@ static std::vector<Observation> bin_observations(const LocScanPoint* points, int
                                                  int min_quality) {
     struct BinAccum {
         bool observed = false;
-        bool hit = false;
-        float distance_mm = 0.0f;
-        int quality = 0;
+        LocScanPoint point;
     };
 
     std::vector<BinAccum> bins(ANGLE_BIN_COUNT);
     for (int i = 0; i < count; i++) {
         const LocScanPoint& pt = points[i];
+        if (!std::isfinite(pt.angle_deg) || !std::isfinite(pt.distance_mm)) continue;
+        // A filtered hit is unknown, not evidence that an expected wall vanished.
+        if (pt.hit && (pt.quality < min_quality || pt.distance_mm < min_range_mm ||
+                       pt.distance_mm > max_range_mm)) continue;
         int bin = (int)(normalize_angle_360(pt.angle_deg) / ANGLE_BIN_DEG);
         if (bin < 0) bin = 0;
         if (bin >= ANGLE_BIN_COUNT) bin = ANGLE_BIN_COUNT - 1;
 
         BinAccum& b = bins[bin];
-        b.observed = true;
-
-        bool is_hit = pt.hit
-                      && pt.quality >= min_quality
-                      && pt.distance_mm >= min_range_mm
-                      && pt.distance_mm <= max_range_mm;
-        if (!is_hit) {
-            // Explicit miss only sticks if this bin has no valid hit yet.
-            continue;
-        }
-
-        if (!b.hit || pt.quality > b.quality
-            || (pt.quality == b.quality && pt.distance_mm < b.distance_mm)) {
-            b.hit = true;
-            b.distance_mm = pt.distance_mm;
-            b.quality = pt.quality;
-        }
-    }
-
-    // Second pass: mark bins that were observed only via misses.
-    for (int i = 0; i < count; i++) {
-        const LocScanPoint& pt = points[i];
-        int bin = (int)(normalize_angle_360(pt.angle_deg) / ANGLE_BIN_DEG);
-        if (bin < 0) bin = 0;
-        if (bin >= ANGLE_BIN_COUNT) bin = ANGLE_BIN_COUNT - 1;
-        BinAccum& b = bins[bin];
-        if (b.hit) {
-            continue;
-        }
-        bool is_hit = pt.hit
-                      && pt.quality >= min_quality
-                      && pt.distance_mm >= min_range_mm
-                      && pt.distance_mm <= max_range_mm;
-        if (!is_hit) {
+        if (!b.observed || (pt.hit && (!b.point.hit || pt.quality > b.point.quality ||
+            (pt.quality == b.point.quality && pt.distance_mm < b.point.distance_mm)))) {
             b.observed = true;
-            b.hit = false;
+            b.point = pt;
         }
     }
 
@@ -740,11 +720,12 @@ static std::vector<Observation> bin_observations(const LocScanPoint* points, int
             continue;
         }
         Observation o;
-        o.angle_deg = (bin + 0.5f) * ANGLE_BIN_DEG;
-        o.hit = b.hit;
-        o.distance_mm = b.distance_mm;
-        if (b.hit) {
-            float w = (float)(b.quality - min_quality) / 30.0f;
+        o.angle_deg = b.point.angle_deg;
+        o.time_s = b.point.time_s;
+        o.hit = b.point.hit;
+        o.distance_mm = b.point.distance_mm;
+        if (b.point.hit) {
+            float w = (float)(b.point.quality - min_quality) / 30.0f;
             if (w > 1.0f) w = 1.0f;
             if (w < 0.05f) w = 0.05f;
             o.weight = w;
@@ -754,6 +735,75 @@ static std::vector<Observation> bin_observations(const LocScanPoint* points, int
         obs.push_back(o);
     }
     return obs;
+}
+
+static bool prepare_observations(std::vector<Observation>& obs, double scan_time,
+                                 const std::string& mode, LocDeskewStatus* status=nullptr) {
+    for (auto& o : obs) {
+        motion::Transform relative;
+        if (mode != "off" && (!std::isfinite(o.time_s) || o.time_s <= 0 ||
+            !g_motion.relative(scan_time, o.time_s, mode == "full", relative))) return false;
+        const double c=std::cos(relative.yaw*motion::RAD), s=std::sin(relative.yaw*motion::RAD);
+        o.origin_x = relative.x + c*g_mount_forward + s*g_mount_left;
+        o.origin_y = relative.y + s*g_mount_forward - c*g_mount_left;
+        o.angle_deg += relative.yaw + g_mount_yaw;
+        if (status) {
+            status->max_translation_mm = std::max(status->max_translation_mm,std::hypot(relative.x,relative.y));
+            status->max_rotation_deg = std::max(status->max_rotation_deg,std::abs(relative.yaw));
+        }
+    }
+    return true;
+}
+
+static double wall_residual(const LocPose& pose, const std::vector<Observation>& obs) {
+    double total=0; int count=0;
+    const double c=std::cos(pose.yaw_deg*motion::RAD), s=std::sin(pose.yaw_deg*motion::RAD);
+    for (const auto& o : obs) {
+        if (!o.hit) continue;
+        const double angle=(pose.yaw_deg+o.angle_deg)*motion::RAD;
+        const auto hit=predict_hit(pose.x+c*o.origin_x-s*o.origin_y,
+            pose.y+s*o.origin_x+c*o.origin_y, std::cos(angle),std::sin(angle),g_pitch_x,g_pitch_y);
+        total += std::abs(hit.range_mm-o.distance_mm); ++count;
+    }
+    return count ? total/count : -1;
+}
+
+void loc_configure_deskew(const std::string& mode, double forward, double left, double yaw) {
+    if ((mode != "off" && mode != "rotation" && mode != "full") ||
+        !std::isfinite(forward) || !std::isfinite(left) || !std::isfinite(yaw))
+        throw std::invalid_argument("Expected off/rotation/full and finite mount offsets");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_deskew_mode=mode; g_mount_forward=forward; g_mount_left=left; g_mount_yaw=yaw;
+}
+LocDeskewStatus loc_get_deskew_status() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex); return g_deskew_status;
+}
+std::vector<std::array<double, 5>> loc_preview_scan(const std::vector<LocScanPoint>& points, double time_s) {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    auto obs=bin_observations(points.data(),points.size(),80,6000,5), raw=obs;
+    prepare_observations(raw,time_s,"off");
+    if (!prepare_observations(obs,time_s,g_deskew_mode)) return {};
+    std::vector<std::array<double,5>> result;
+    for (size_t i=0; i<obs.size(); ++i) {
+        const auto& a=raw[i]; const auto& b=obs[i];
+        result.push_back({a.origin_x+a.distance_mm*std::cos(a.angle_deg*motion::RAD),
+            a.origin_y+a.distance_mm*std::sin(a.angle_deg*motion::RAD),
+            b.origin_x+b.distance_mm*std::cos(b.angle_deg*motion::RAD),
+            b.origin_y+b.distance_mm*std::sin(b.angle_deg*motion::RAD),b.hit ? 1.0 : 0.0});
+    }
+    return result;
+}
+void loc_set_replay_time(double time) {
+    if (!std::isfinite(time)) throw std::invalid_argument("Non-finite replay time");
+    std::lock_guard<std::mutex> lock(g_loc_mutex); g_replay_time=time;
+}
+void loc_seed(unsigned seed) {
+    std::lock_guard<std::mutex> lock(g_loc_mutex); g_rng.seed(seed);
+}
+
+static void clear_motion_history() {
+    g_motion={}; g_pose_time=0; g_timed_motion=false;
+    g_odometry_history.clear(); g_deskew_status={};
 }
 
 void loc_init_map(float pitch_x, float pitch_y) {
@@ -784,6 +834,7 @@ void loc_set_imu_yaw(float yaw_deg) {
 
 void loc_start(bool use_pcb) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    clear_motion_history();
     g_use_pcb = use_pcb;
     g_last_line_used_timestamp = 0;
     g_line_readings = {};
@@ -799,6 +850,7 @@ void loc_start(bool use_pcb) {
 
 void loc_stop() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    clear_motion_history();
     g_use_pcb = false;
     g_last_line_used_timestamp = 0;
     g_line_readings = {};
@@ -815,6 +867,7 @@ void loc_stop() {
 
 void loc_reset() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    clear_motion_history();
     g_last_line_used_timestamp = 0;
     g_line_readings = {};
     if (!g_started) {
@@ -838,11 +891,16 @@ void loc_set_motion_noise(float speed_coefficient) {
 }
 
 void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s) {
+    if (!std::isfinite(vx_mm_s) || !std::isfinite(vy_mm_s) ||
+        !std::isfinite(omega_deg_s) || !std::isfinite(dt_s))
+        throw std::invalid_argument("Non-finite odometry");
     if (dt_s <= 0.0f) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    if (g_timed_motion)
+        throw std::logic_error("Cannot mix legacy prediction with timestamped motion; restart localisation");
     if (!g_started || g_particles.empty()) {
         return;
     }
@@ -856,13 +914,13 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
     }
 
     const double end_time_s = monotonic_time_s();
-    // In PCB mode, consecutive history intervals must meet even if lock wait
+    // Legacy callers also keep contiguous history intervals even if lock wait
     // or scoring time changes between calls. Scale the recorded rates so the
     // whole interval exactly reproduces the motion integrated with caller dt.
-    // Keep the legacy timestamp path untouched when PCB is disabled.
-    const double start_time_s = g_use_pcb && !g_odometry_history.empty()
+    // Timestamped hardware callers use loc_feed_motion instead of this approximation.
+    const double start_time_s = !g_odometry_history.empty()
         ? g_odometry_history.back().end_time_s : end_time_s - dt_s;
-    const double history_scale = g_use_pcb ? dt_s / (end_time_s - start_time_s) : 1.0;
+    const double history_scale = dt_s / std::max(end_time_s - start_time_s, 1e-9);
     g_odometry_history.push_back({
         start_time_s, end_time_s, float(vx_mm_s * history_scale),
         float(vy_mm_s * history_scale), float(omega_deg_s * history_scale)
@@ -880,6 +938,71 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
         g_pose.yaw_deg = updated.yaw_deg;
     }
     apply_pending_line_readings_locked(end_time_s);
+}
+
+void loc_feed_motion(double vx, double vy, double time_s, double read_span_s,
+                     const std::vector<motion::Value>& yaw,
+                     const std::vector<motion::Value>& gyro, std::uint64_t epoch) {
+    if (!std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(time_s) || time_s <= 0 ||
+        !std::isfinite(read_span_s) || read_span_s < 0)
+        throw std::invalid_argument("Invalid timestamped wheel sample");
+    for (const auto* values : {&yaw, &gyro})
+        for (const auto& v : *values)
+            if (!std::isfinite(v.time) || v.time <= 0 || !std::isfinite(v.value))
+                throw std::invalid_argument("Invalid timestamped IMU sample");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    if (!g_started) return;
+    const double now=monotonic_time_s();
+    if (time_s > now || now-time_s > 0.5) return;
+    if (!g_timed_motion || epoch != g_motion_epoch) {
+        clear_motion_history(); g_imu_yaw_valid=false;
+        g_motion_epoch=epoch; g_timed_motion=true;
+    }
+    for (const auto& v : yaw)
+        if (v.time <= now) motion::History::append(g_motion.yaw,v.time,v.value);
+    for (const auto& v : gyro)
+        if (v.time <= now) motion::History::append(g_motion.gyro,v.time,v.value);
+    if (!g_motion.yaw.empty() && now-g_motion.yaw.back().time <= 0.1) {
+        g_imu_yaw_deg=g_motion.yaw.back().value; g_imu_yaw_valid=true;
+    } else g_imu_yaw_valid=false;
+    // Sequential QDR reads are represented at their midpoint; excessive skew
+    // makes the sample unusable for compensation instead of inventing motion.
+    if (read_span_s > 0.05) return;
+    if (g_motion.wheels.empty() || time_s > g_motion.wheels.back().time)
+        g_motion.wheels.push_back({time_s,vx,vy});
+    while (g_motion.wheels.size()>2 && g_motion.wheels[1].time < time_s-2)
+        g_motion.wheels.pop_front();
+    if (g_motion.gyro.empty()) return;
+    const double end=std::min(g_motion.wheels.back().time,g_motion.gyro.back().time);
+    if (!g_pose_time) g_pose_time=std::max(g_motion.wheels.front().time,g_motion.gyro.front().time);
+    if (end <= g_pose_time) return;
+    motion::Transform checked;
+    if (!g_motion.relative(g_pose_time,end,true,checked)) {
+        // Never bridge a sensor outage. Old scans must not cross this boundary.
+        g_odometry_history.clear(); g_pose_time=end; g_pose.ok=false;
+        return;
+    }
+    std::vector<double> cuts{g_pose_time,end};
+    for (const auto& v : g_motion.gyro)
+        if (v.time>g_pose_time && v.time<end) cuts.push_back(v.time);
+    for (const auto& v : g_motion.wheels)
+        if (v.time>g_pose_time && v.time<end) cuts.push_back(v.time);
+    std::sort(cuts.begin(),cuts.end());
+    for (size_t i=1; i<cuts.size(); ++i) {
+        const double dt=cuts[i]-cuts[i-1], mid=(cuts[i]+cuts[i-1])/2;
+        if (dt <= 0) continue;
+        double omega=0, x=0, y=0;
+        motion::History::interpolate(g_motion.gyro,mid,omega);
+        g_motion.velocity(mid,x,y);
+        update_rotation_gate(omega,dt);
+        for (auto& p : g_particles) propagate_particle(p,x,y,omega,dt,true);
+        g_odometry_history.push_back({cuts[i-1],cuts[i],float(x),float(y),float(omega)});
+    }
+    g_pose_time=end;
+    while (!g_odometry_history.empty() && g_odometry_history.front().end_time_s < end-2)
+        g_odometry_history.pop_front();
+    if (g_ready) g_pose=estimate_pose_from_particles(nullptr,0);
+    apply_pending_line_readings_locked(now);
 }
 
 static float floor_segment_distance_sq(float x, float y, float ax, float ay, float bx, float by) {
@@ -981,15 +1104,27 @@ static void apply_pending_line_readings_locked(double now) {
 void loc_update_scan(const LocScanPoint* points, int count,
                      float min_range_mm, float max_range_mm, int min_quality,
                      double scan_time_s) {
-    {
-        std::lock_guard<std::mutex> lock(g_loc_mutex);
-        if (g_scan_updates_paused || !g_started || g_particles.empty()) {
-            return;
-        }
-    }
-
     std::vector<Observation> obs = bin_observations(
         points, count, min_range_mm, max_range_mm, min_quality);
+
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    const auto sequence=g_deskew_status.sequence+1;
+    g_deskew_status={}; g_deskew_status.sequence=sequence;
+    g_deskew_status.mode=g_deskew_mode; g_deskew_status.scan_time_s=scan_time_s;
+    g_deskew_status.reason="not_started";
+    struct Timer {
+        std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
+        ~Timer() { g_deskew_status.processing_ms=std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-start).count(); }
+    } timer;
+    if (!g_started || g_particles.empty()) return;
+    double first=scan_time_s, last=scan_time_s;
+    for (int i=0; i<count; ++i) {
+        if (!std::isfinite(points[i].time_s)) { g_deskew_status.reason="invalid_scan_time"; return; }
+        if (points[i].time_s > 0) { first=std::min(first,points[i].time_s); last=std::max(last,points[i].time_s); }
+    }
+    g_deskew_status.duration_s=last-first;
+    g_deskew_status.age_s=scan_time_s > 0 ? monotonic_time_s()-scan_time_s : 0;
 
     int hit_count = 0;
     for (const auto& o : obs) {
@@ -998,11 +1133,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
 
     const int n = (int)obs.size();
     if (n < MIN_OBSERVATION_COUNT || hit_count < MIN_HIT_COUNT) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
-    if (g_scan_updates_paused || !g_started || g_particles.empty()) {
+        g_deskew_status.reason="insufficient_observations";
         return;
     }
 
@@ -1014,10 +1145,56 @@ void loc_update_scan(const LocScanPoint* points, int count,
     if (!std::isfinite(scan_time_s)
         || (scan_time_s >= 0.0
             && (scan_time_s == 0.0 || scan_time_s > monotonic_time_s()
-                || (!g_odometry_history.empty()
+                || last > monotonic_time_s() || (!g_odometry_history.empty()
                     && scan_time_s < g_odometry_history.front().start_time_s)))) {
+        g_deskew_status.reason="invalid_scan_time";
         return;
     }
+    if (g_timed_motion && scan_time_s > 0 && (g_odometry_history.empty() || last > g_pose_time)) {
+        g_deskew_status.reason=monotonic_time_s()-last < 0.25 ? "waiting_motion" : "missing_motion";
+        return;
+    }
+    if (g_timed_motion && scan_time_s > 0 && first < g_odometry_history.front().start_time_s) {
+        g_deskew_status.reason="missing_motion"; return;
+    }
+    float scan_imu_yaw=g_imu_yaw_deg;
+    bool use_imu=g_imu_yaw_valid;
+    if (g_timed_motion && scan_time_s > 0) {
+        double historical_yaw=0;
+        if (!motion::History::interpolate(g_motion.yaw,scan_time_s,historical_yaw,true)) {
+            g_deskew_status.reason="missing_yaw"; return;
+        }
+        scan_imu_yaw=historical_yaw; use_imu=true;
+    }
+    auto raw_obs=obs;
+    prepare_observations(raw_obs,scan_time_s,"off");
+    if (!prepare_observations(obs,scan_time_s,g_deskew_mode,&g_deskew_status)) {
+        g_deskew_status.reason="missing_motion"; return;
+    }
+    g_deskew_status.history_ok=g_timed_motion;
+    // Show motion compensation diagnostics even while the rotation gate is shut.
+    if (g_ready) {
+        Particle diagnostic{g_pose.x,g_pose.y,g_pose.yaw_deg,1};
+        if (scan_time_s>0 && !g_odometry_history.empty())
+            diagnostic=line_pose_at_time(diagnostic,g_odometry_history.back().end_time_s,scan_time_s);
+        const LocPose pose{diagnostic.x,diagnostic.y,diagnostic.yaw_deg,0,false};
+        g_deskew_status.raw_residual_mm=wall_residual(pose,raw_obs);
+        g_deskew_status.corrected_residual_mm=wall_residual(pose,obs);
+    }
+    if (g_scan_updates_paused) { g_deskew_status.reason="rotation_gate"; return; }
+    // Recovery proposals use the epoch of their particle coordinates: the scan
+    // epoch in the rewind path, the present in the PCB copy-scoring path.
+    struct RestorePrior {
+        float yaw; bool valid;
+        ~RestorePrior() { g_imu_yaw_deg=yaw; g_imu_yaw_valid=valid; }
+    } restore_prior{g_imu_yaw_deg,g_imu_yaw_valid};
+    if (!g_use_pcb) g_imu_yaw_deg=scan_imu_yaw;
+    else if (g_timed_motion) {
+        double present_yaw=0;
+        if (motion::History::interpolate(g_motion.yaw,g_pose_time,present_yaw,true))
+            g_imu_yaw_deg=present_yaw;
+    }
+    g_imu_yaw_valid=use_imu;
     const LocPose predicted_pose = g_pose;
     const bool had_prior_pose = g_ready && g_pose.ok;
     const bool compensate_delay =
@@ -1064,14 +1241,18 @@ void loc_update_scan(const LocScanPoint* points, int count,
             ? line_pose_at_time(particle, present, scan_time_s) : particle;
         float log_lik = score_pose(observed.x, observed.y, observed.yaw_deg,
                                    obs.data(), n, g_pitch_x, g_pitch_y, max_range_mm);
-        if (g_imu_yaw_valid) {
-            float yaw_err = wrap_angle_deg(observed.yaw_deg - g_imu_yaw_deg);
+        if (use_imu) {
+            float yaw_err = wrap_angle_deg(observed.yaw_deg - scan_imu_yaw);
             float e = yaw_err / YAW_PRIOR_SIGMA_DEG;
             log_lik += -0.5f * e * e;
         }
-        // Preserve the existing LIDAR/IMU recovery metric, excluding floor evidence.
+        // Recovery measures this scan's fit, independent of accumulated evidence
+        // (including floor readings), so a confident wrong pose can still recover.
         max_lidar_log = std::max(max_lidar_log, log_lik);
-        if (g_use_pcb) log_lik += std::log(std::max(particle.weight, 1e-30f));
+        // ESS resampling is conditional. Between resamples the prior weights
+        // carry evidence that must survive in both PCB modes. After resampling,
+        // equal weights contribute only a common factor that cancels below.
+        log_lik += std::log(std::max(particle.weight, 1e-30f));
         particle.weight = log_lik;
         if (log_lik > max_log) {
             max_log = log_lik;
@@ -1133,6 +1314,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
     g_pose = estimate_pose_from_particles(nullptr, 0);
     g_pose.confidence = scan_pose.confidence;
     g_pose.ok = scan_pose.ok;
+    g_deskew_status.reason="accepted"; g_deskew_status.accepted=true;
     if (g_pose.ok && had_prior_pose) {
         float dx = g_pose.x - predicted_pose.x;
         float dy = g_pose.y - predicted_pose.y;

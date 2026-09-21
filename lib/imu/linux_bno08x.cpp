@@ -16,16 +16,16 @@ double wrap(double value) {
     return (value < 0 ? value + 360.0 : value) - 180.0;
 }
 }
-LinuxBno08x::LinuxBno08x(TwoWire& wire, int address, int report_interval_ms)
+LinuxBno08x::LinuxBno08x(TwoWire& wire, int address, double report_interval_ms)
     : wire_(wire) {
-    if (address < 8 || address > 119 || report_interval_ms < 1 || report_interval_ms > 1000)
+    if (address < 8 || address > 119 || !std::isfinite(report_interval_ms) || report_interval_ms < 1 || report_interval_ms > 1000)
         throw std::invalid_argument("Invalid IMU address or report interval (1..1000 ms)");
     bool expected = false;
     if (!session_owned.compare_exchange_strong(expected, true))
         throw std::runtime_error("Only one native BNO08x session is supported per process");
     owns_session_ = true;
     address_ = static_cast<uint8_t>(address);
-    interval_us_ = static_cast<uint32_t>(report_interval_ms) * 1000;
+    interval_us_ = static_cast<uint32_t>(report_interval_ms * 1000);
     hal_.owner = this;
     hal_.open = hal_open;
     hal_.close = hal_close;
@@ -85,6 +85,8 @@ void LinuxBno08x::close() noexcept {
     {
         std::lock_guard<std::mutex> lock(imu_mutex_);
         yaw_time_ = gyro_time_ = {};
+        ++history_epoch_;
+        yaw_history_.clear(); gyro_history_.clear();
     }
     if (owns_session_) session_owned = false;
     owns_session_ = false;
@@ -163,6 +165,8 @@ void LinuxBno08x::on_event(void* cookie, sh2_AsyncEvent_t* event) {
         self.reset_seen_ = self.reconfigure_ = true;
         std::lock_guard<std::mutex> lock(self.imu_mutex_);
         self.yaw_time_ = self.gyro_time_ = {};
+        ++self.history_epoch_;
+        self.yaw_history_.clear(); self.gyro_history_.clear();
     }
 }
 void LinuxBno08x::on_sensor(void* cookie, sh2_SensorEvent_t* event) {
@@ -170,6 +174,20 @@ void LinuxBno08x::on_sensor(void* cookie, sh2_SensorEvent_t* event) {
     sh2_SensorValue_t value{};
     if (sh2_decodeSensorEvent(&value, event) != SH2_OK) return;
     std::lock_guard<std::mutex> lock(self.imu_mutex_);
+    // SH-2 timestamps extend the HAL's low 32 monotonic microseconds, with
+    // report-delay correction. Align that wrap domain to the host clock.
+    const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        Clock::now().time_since_epoch()).count();
+    const int32_t delta = static_cast<int32_t>(
+        static_cast<uint32_t>(event->timestamp_uS) - static_cast<uint32_t>(now_us));
+    const double timestamp = (now_us + delta) * 1e-6;
+    const auto append = [&](auto& history, double reading) {
+        // Invalid/late times remain usable for live control, but not deskew.
+        if (delta > 0 || delta < -250000 ||
+            (!history.empty() && timestamp <= history.back().first)) return;
+        history.emplace_back(timestamp, reading);
+        while (history.size() > 2 && history[1].first < timestamp-2) history.pop_front();
+    };
     if (value.sensorId == SH2_GAME_ROTATION_VECTOR) {
         const auto& q = value.un.gameRotationVector;
         const double yaw = std::atan2(2.0 * (q.real * q.k + q.i * q.j),
@@ -180,15 +198,20 @@ void LinuxBno08x::on_sensor(void* cookie, sh2_SensorEvent_t* event) {
         if (self.startup_yaw_) {
             self.sample_.yaw = wrap(*self.startup_yaw_ - yaw);
             self.sample_.last_yaw = *self.sample_.yaw;
+            append(self.yaw_history_, *self.sample_.yaw);
         }
         self.yaw_time_ = Clock::now();
         ++self.sample_.update_count;
+        self.sample_.yaw_received_s = now_us * 1e-6;
     } else if (value.sensorId == SH2_GYROSCOPE_CALIBRATED) {
         // Match startup_yaw - raw_yaw: the upside-down mounting requires
         // reversing sensor Z to report clockwise-positive angular velocity.
         const double z = -value.un.gyroscope.z * DEG;
         if (!std::isfinite(z)) return;
         self.sample_.gyro_z = z;
+        ++self.sample_.gyro_count;
+        self.sample_.gyro_received_s = now_us * 1e-6;
+        append(self.gyro_history_, z);
         self.gyro_time_ = Clock::now();
     }
 }
@@ -196,6 +219,8 @@ void LinuxBno08x::set_startup_yaw(double raw_yaw) {
     if (!std::isfinite(raw_yaw)) throw std::invalid_argument("Startup yaw must be finite");
     std::lock_guard<std::mutex> lock(imu_mutex_);
     startup_yaw_ = wrap(raw_yaw);
+    ++history_epoch_;
+    yaw_history_.clear(); gyro_history_.clear();
     if (sample_.raw_yaw) {
         sample_.yaw = wrap(*startup_yaw_ - *sample_.raw_yaw);
         sample_.last_yaw = *sample_.yaw;
@@ -212,5 +237,10 @@ LinuxBno08x::Snapshot LinuxBno08x::snapshot() const {
     }
     if (now - gyro_time_ >= std::chrono::milliseconds(100)) result.gyro_z.reset();
     return result;
+}
+LinuxBno08x::History LinuxBno08x::history() const {
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    return {history_epoch_, {yaw_history_.begin(), yaw_history_.end()},
+            {gyro_history_.begin(), gyro_history_.end()}};
 }
 } // namespace hardware

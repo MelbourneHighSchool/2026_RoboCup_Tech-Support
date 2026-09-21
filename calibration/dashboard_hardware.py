@@ -124,11 +124,12 @@ class Hardware:
         if errors:
             self.notify("Motor shutdown failed: " + "; ".join(errors), error=True)
 
-    def _localise(self, cancel):
+    def _localise(self, cancel, data=None):
         if self.session is not None:
             return
         from lib.hardware_controller import HardwareController
 
+        from calibration.polling import PollingMeasurements, polling_rates
         from lib import lidar
         from lib.config import load_config
         from lib.line_sensors import LineSensorFeed
@@ -139,6 +140,7 @@ class Hardware:
             feed_imu_yaw_prior,
         )
 
+        rates = polling_rates(data or {})
         imu = None
         try:
             lidar.init(self.port, self.baud)
@@ -151,6 +153,9 @@ class Hardware:
                 3,
                 calibration_file=str(self.root / "calibration_data.json"),
                 use_pcb=self.use_pcb,
+                motor_hz=rates["motor_hz"], pcb_hz=rates["pcb_hz"],
+                imu_poll_hz=rates["imu_poll_hz"],
+                imu_report_interval_ms=1000 / rates["imu_hz"],
             )
             startup = capture_startup_yaw(imu, cancel_event=cancel)
             feed_imu_yaw_prior(lidar, imu, startup)
@@ -160,6 +165,8 @@ class Hardware:
                 self.notify(line_feed.error, error=True)
             self.session = LocalisationSession(lidar, imu, startup, LidarVelocityEstimator(),
                                                line_feed=line_feed, use_pcb=self.use_pcb)
+            self.polling_measurements = PollingMeasurements(imu, rates)
+            self.localisation_period = 1 / rates["odometry_hz"]
         except BaseException:
             if imu is not None:
                 imu.stop()
@@ -348,7 +355,7 @@ class Hardware:
                         with self.lock:
                             self.status.update(mode="starting " + action, error=None)
                         if action == "localise":
-                            self._localise(cancel)
+                            self._localise(cancel, data)
                         elif action == "pcb_start":
                             self._monitor_pcb(cancel)
                         elif action == "gpio":
@@ -379,6 +386,8 @@ class Hardware:
                         with self.lock:
                             controller = self.controller
                         state = self.session.tick(controller)
+                        if hasattr(self, "polling_measurements"):
+                            state["polling"] = self.polling_measurements.update(self.session.imu)
                         if time.monotonic() >= next_map:
                             state["scan"] = list(self.session.lidar.get_scan_list())[::2]
                             next_map = time.monotonic() + 0.2
@@ -435,7 +444,8 @@ class Hardware:
                                 self.status["localisation"]["fresh"] = False
                         self.session.close()
                         self.session = None
-                self.closing.wait(max(0, 0.02 - (time.monotonic() - started)))
+                period = getattr(self, "localisation_period", 0.02) if self.session else 0.02
+                self.closing.wait(max(0, period - (time.monotonic() - started)))
         finally:
             self.stop_drive()
             if self.session is not None:

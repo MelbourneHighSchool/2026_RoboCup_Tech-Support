@@ -80,13 +80,14 @@ std::pair<double, double> body_velocity(const std::array<double, 4>& rpms, doubl
 HardwareController::HardwareController(const std::vector<MotorCalibration>& calibration,
                                      DriveConfig config, const std::string& device,
                                      std::unique_ptr<TwoWire> transport,
-                                     int imu_address, int imu_report_interval_ms,
+                                     int imu_address, double imu_report_interval_ms,
                                      int kicker_pin, const std::string& kicker_gpiochip,
                                      std::unique_ptr<KickerOutput> kicker_output,
                                      double drive_motor_current_limit,
                                      double dribbler_motor_current_limit,
                                      double kick_pulse_length, double kick_cooldown,
-                                     std::shared_ptr<StatusDisplay> display, bool use_pcb) :
+                                     std::shared_ptr<StatusDisplay> display, bool use_pcb,
+                                     double motor_hz, double pcb_hz, double imu_poll_hz) :
     config_(config),
     use_pcb_(use_pcb),
     drive_motor_current_limit_(current_limit_lsb(drive_motor_current_limit)),
@@ -95,6 +96,15 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
     acceleration_current_limit_(drive_motor_current_limit_),
     kick_pulse_(seconds_duration(kick_pulse_length, "Kick pulse length")),
     kick_cooldown_(seconds_duration(kick_cooldown, "Kick cooldown")) {
+    const auto period = [](double hz, double maximum) {
+        if (!std::isfinite(hz) || hz < 10 || hz > maximum)
+            throw std::invalid_argument("Polling rate outside supported range");
+        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(1.0 / hz));
+    };
+    motor_period_ = period(motor_hz, 200);
+    pcb_period_ = period(pcb_hz, 200);
+    imu_poll_period_ = period(imu_poll_hz, 1000);
     config_.validate();
     if (calibration.size() != 4 && calibration.size() != 5)
         throw std::invalid_argument("HardwareController requires four wheels and an optional dribbler");
@@ -105,7 +115,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
             throw std::invalid_argument("Invalid or duplicate motor address, or invalid calibration centre");
     }
     if (imu_address < 8 || imu_address > 119 || addresses.count(imu_address) ||
-        imu_report_interval_ms < 1 || imu_report_interval_ms > 1000)
+        !std::isfinite(imu_report_interval_ms) || imu_report_interval_ms < 1 || imu_report_interval_ms > 1000)
         throw std::invalid_argument("Invalid IMU address or report interval (1..1000 ms)");
     if (kicker_pin < -1 || kicker_pin > 27)
         throw std::invalid_argument("Kicker pin must be -1 (disabled) or BCM GPIO 0..27");
@@ -303,18 +313,29 @@ void HardwareController::set_drive_current_limits(double constant_speed_amps, do
 }
 std::pair<double, double> HardwareController::get_measured_body_velocity_mm_s(double yaw_deg) {
     finite(yaw_deg); // Kept for compatibility; body-frame inversion does not need yaw.
+    const auto sample = get_localisation_sample();
+    return {sample.vx, sample.vy};
+}
+HardwareController::LocalisationSample HardwareController::get_localisation_sample() {
+    const auto requested = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> bus_lock(wire_->mutex);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         check_state();
     }
     try {
+        const auto started = std::chrono::steady_clock::now();
         std::array<double, 4> rpms;
         for (size_t i = 0; i < rpms.size(); ++i) {
             motor_operation(i, [&] { motors_[i].updateQuickDataReadout(); });
             rpms[i] = motors_[i].getSpeedQDR() / RPM_TO_MOTOR_SPEED;
         }
-        return body_velocity(rpms, config_.diameter);
+        const auto ended = std::chrono::steady_clock::now();
+        const auto velocity = body_velocity(rpms, config_.diameter);
+        const double span = std::chrono::duration<double>(ended-started).count();
+        record_timing("odometry", std::chrono::duration<double>(started-requested).count(), span);
+        const double timestamp = std::chrono::duration<double>(started.time_since_epoch()).count()+span/2;
+        return {velocity.first, velocity.second, timestamp, span, imu_->history()};
     } catch (const std::exception& exc) {
         fail(exc.what());
         throw MotorCommunicationError(exc.what());
@@ -395,18 +416,44 @@ double HardwareController::current_direction() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return std::atan2(dy_, dx_) / RAD;
 }
+void HardwareController::record_timing(const std::string& name, double wait_s, double work_s) {
+    std::lock_guard<std::mutex> lock(timing_mutex_);
+    ++timing_[name + "_count"];
+    timing_[name + "_wait_s"] += wait_s;
+    timing_[name + "_work_s"] += work_s;
+    auto& maximum = timing_[name + "_max_wait_s"];
+    maximum = std::max(maximum, wait_s);
+    auto& work_max = timing_[name + "_max_work_s"];
+    work_max = std::max(work_max, work_s);
+}
+std::map<std::string, double> HardwareController::timing_diagnostics() const {
+    const auto imu = imu_->snapshot();
+    const double now = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lock(timing_mutex_);
+    auto result = timing_;
+    result["yaw_count"] = imu.update_count;
+    result["gyro_count"] = imu.gyro_count;
+    result["yaw_age_s"] = imu.yaw_received_s ? now - imu.yaw_received_s : -1;
+    result["gyro_age_s"] = imu.gyro_received_s ? now - imu.gyro_received_s : -1;
+    return result;
+}
 void HardwareController::imu_loop() noexcept {
     while (running_) {
+        const auto requested = std::chrono::steady_clock::now();
         try {
             std::lock_guard<std::mutex> bus_lock(wire_->mutex);
             if (!running_) break;
+            const auto acquired = std::chrono::steady_clock::now();
             imu_->service();
+            record_timing("imu_poll", std::chrono::duration<double>(acquired - requested).count(),
+                          std::chrono::duration<double>(std::chrono::steady_clock::now() - acquired).count());
         } catch (const std::exception&) {
             // Report freshness to main.py; the game loop owns the pause policy.
         }
         std::unique_lock<std::mutex> lock(state_mutex_);
         check_imu_locked();
-        wake_.wait_for(lock, std::chrono::milliseconds(2), [&] { return !running_; });
+        wake_.wait_for(lock, imu_poll_period_, [&] { return !running_; });
     }
 }
 void HardwareController::kicker_loop() noexcept {
@@ -441,7 +488,7 @@ void HardwareController::kicker_loop() noexcept {
 }
 void HardwareController::pcb_loop() noexcept {
     using Clock = std::chrono::steady_clock;
-    const auto period = std::chrono::milliseconds(20); // 50 Hz
+    const auto period = pcb_period_;
     auto next = Clock::now() + period;
     try {
         while (running_) {
@@ -456,7 +503,9 @@ void HardwareController::pcb_loop() noexcept {
             }
             // Pcb takes the bus mutex; never hold state_mutex_ during I/O.
             if (kick) pcb_->kick();
+            const auto requested = Clock::now();
             const auto scan = pcb_->read_sensors();
+            record_timing("pcb", 0, std::chrono::duration<double>(Clock::now() - requested).count());
             const double timestamp = std::chrono::duration<double>(
                 Clock::now().time_since_epoch()).count();
             {
@@ -475,7 +524,7 @@ void HardwareController::pcb_loop() noexcept {
 }
 void HardwareController::drive_loop() noexcept {
     using Clock = std::chrono::steady_clock; // Measures elapsed time
-    const auto period = std::chrono::milliseconds(20); // Target loop period (50Hz)
+    const auto period = motor_period_;
     auto last = Clock::now(); // Previous loop time
     auto next = last + period; // Target next loop time
     std::array<double, 4> previous_rpms{};
@@ -483,6 +532,7 @@ void HardwareController::drive_loop() noexcept {
     try {
         while (running_) {
             Command command;
+            Clock::time_point deadline;
             int32_t steady_current, accelerating_current;
             {
                 // Obtains a lock to avoid this loop and move() racing
@@ -497,6 +547,7 @@ void HardwareController::drive_loop() noexcept {
                 // Cap dt at 0.04 to avoid large jumps after a stutter
                 const double dt = std::clamp(std::chrono::duration<double>(now - last).count(), 0.0, 0.04);
                 last = now;
+                deadline = next + period;
                 next += period;
                 if (next <= now) next = now + period; // Account for missed loops
 
@@ -520,9 +571,11 @@ void HardwareController::drive_loop() noexcept {
                 command.direction = std::atan2(dy_, dx_) / RAD;
                 command.speed = std::hypot(dx_, dy_);
             }
+            const auto requested = Clock::now();
             // Acquire lock on i2c bus
             std::lock_guard<std::mutex> bus_lock(wire_->mutex);
             if (!running_) break;
+            const auto acquired = Clock::now();
             // Read after acquiring the bus: an IMU operation may have delayed this tick.
             const auto imu = imu_->snapshot();
             command.yaw = imu.last_yaw;
@@ -546,6 +599,12 @@ void HardwareController::drive_loop() noexcept {
             if (motors_.size() > 4)
                 motor_operation(4, [&] { motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_); });
             ++loop_count_;
+            const auto completed = Clock::now();
+            record_timing("motor", std::chrono::duration<double>(acquired - requested).count(),
+                          std::chrono::duration<double>(completed - acquired).count());
+            std::lock_guard<std::mutex> timing_lock(timing_mutex_);
+            if (completed > deadline) ++timing_["motor_overruns"];
+
         }
     } catch (const std::exception& exc) {
         fail(exc.what());

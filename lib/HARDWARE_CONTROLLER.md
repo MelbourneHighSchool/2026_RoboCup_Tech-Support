@@ -1,5 +1,12 @@
 # C++ hardware controller
 
+Timestamped localisation uses `get_localisation_sample()`: a dictionary with
+`vx`, `vy` (forward/left mm/s), `timestamp_s` (wheel-read midpoint), `read_span_s`,
+`yaw` and `gyro` histories of `(monotonic_seconds, value)`, and an `epoch` that
+changes on IMU reset/re-zero. The call performs four wheel QDR reads and copies
+the bounded native IMU history; it does not command motors. See
+[LOCALISATION_TIMING.md](LOCALISATION_TIMING.md) for compensation and replay.
+
 `main.py` uses `lib.hardware_controller.HardwareController`, a pybind11 extension.
 The C++ controller owns the four drive motors and optional fifth dribbler through
 `PowerfulBLDCdriver`, plus a BNO08x IMU through the portable SH-2/SHTP core.
@@ -300,3 +307,21 @@ is excluded from the LIDAR recovery-quality metric. Geometry, sensor offsets,
 and likelihood strength still need validation on the real pitch.
 Restart localisation after changing saved thresholds. Rebuild both extensions
 with `.venv/bin/python lib/setup.py build_ext --inplace` on the Pi.
+
+### Dashboard polling experiments
+
+Localisation & drive test offers session-only motor-command, wheel-odometry/test-loop,
+IMU report, IMU polling and PCB read rates. Stop the test before changing them.
+Native constructor options `motor_hz`, `pcb_hz`, `imu_poll_hz` default to 50, 50,
+500. `imu_report_interval_ms` accepts fractional milliseconds (2.5 for 400 Hz).
+The IMU polling setting controls the wait after draining reports, so actual polling
+is slower than its ceiling. These options do not change the Linux I2C clock.
+
+`timing_diagnostics()` returns cumulative counts, bus-wait/service totals and
+maxima in seconds, motor deadline-overrun counts, separate yaw/gyro report counts,
+and receipt ages. PCB service includes its internally acquired bus lock; the other
+workers report waiting separately. Dashboard rates/means use counter differences
+across approximately one second; maxima and total overruns start at controller
+startup. They are software timings, not electrical bus utilisation or end-to-end
+IMU latency. Compare actual report rates and motor waiting/overruns alongside
+localisation confidence and correction errors under repeatable physical motion.

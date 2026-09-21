@@ -8,6 +8,9 @@
 #include <exception>
 #include <mutex>
 #include <optional>
+#include <deque>
+#include <vector>
+#include <utility>
 
 namespace hardware {
 // Owns the process-wide SH-2 session. The caller serializes initialize/service/close
@@ -19,9 +22,10 @@ public:
         std::optional<std::array<double, 4>> quaternion;
         std::optional<double> raw_yaw, yaw, gyro_z;
         double last_yaw = 0; // Retained for field-to-body translation during outages.
-        uint64_t update_count = 0;
+        uint64_t update_count = 0, gyro_count = 0;
+        double yaw_received_s = 0, gyro_received_s = 0;
     };
-    LinuxBno08x(TwoWire& wire, int address = 0x4a, int report_interval_ms = 10);
+    LinuxBno08x(TwoWire& wire, int address = 0x4a, double report_interval_ms = 10);
     ~LinuxBno08x();
     LinuxBno08x(const LinuxBno08x&) = delete;
     LinuxBno08x& operator=(const LinuxBno08x&) = delete;
@@ -30,6 +34,11 @@ public:
     void close() noexcept;
     void set_startup_yaw(double raw_yaw);
     Snapshot snapshot() const;
+    struct History {
+        uint64_t epoch;
+        std::vector<std::pair<double,double>> yaw, gyro;
+    };
+    History history() const;
 private:
     struct Hal : sh2_Hal_t { LinuxBno08x* owner; };
     static LinuxBno08x& owner(sh2_Hal_t* hal);
@@ -54,5 +63,7 @@ private:
     Snapshot sample_;
     std::optional<double> startup_yaw_;
     Clock::time_point yaw_time_{}, gyro_time_{};
+    uint64_t history_epoch_ = 0;
+    std::deque<std::pair<double,double>> yaw_history_, gyro_history_;
 };
 } // namespace hardware

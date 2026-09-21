@@ -345,6 +345,43 @@ and likelihood strength on the real pitch before enabling it in operation.
 
 ## Localisation diagnostic interpretation
 
+**Problem:** Rewinding particles to the scan midpoint while using current IMU yaw
+mixed acquisition epochs. Sorting SDK samples before preserving their order also
+prevented per-beam timing, and treating filtered hits as misses added false evidence.
+
+**Solution:** Game/dashboard/native localisation tests use
+`HardwareController.get_localisation_sample()` and `lidar.feed_motion()` via
+`lib/localisation_motion.py`. Wheel samples carry midpoint/read-span times; SH-2
+history carries report times and a reset/re-zero epoch. `lib/motion_history.h`
+interpolates bounded histories and integrates matched forward/inverse motion.
+SDK beam times are reconstructed before angular selection; selected bearings are
+retained and invalid hits are excluded. `SOCCER_DESKEW=off|rotation|full` selects
+compensation (default full for these callers); the rotation gate stays enabled.
+Use `SOCCER_LOCALISATION_RECORD` and `python -m lib.replay_localisation` for
+comparison; see `lib/LOCALISATION_TIMING.md` for controls and timing limitations.
+
+**Problem:** Repeated `set_startup_yaw()` calls after every rolling sample while
+paused would now clear motion history every 20 ms, preventing complete scan coverage.
+
+**Solution:** `main.py` installs one reference after each pause/recovery sample
+batch. IMU recovery or a new pause rearms sampling. Reset/re-zero boundaries must
+never be interpolated across. Legacy untimestamped prediction remains for offline
+utilities, with deskew off; do not mix it with timestamped hardware prediction.
+
+**Problem:** With PCB disabled, LIDAR updates previously replaced particle weights
+with the latest scan likelihood. Because ESS resampling is conditional, this
+discarded historical evidence whenever the previous update had not resampled.
+
+**Solution:** Both modes now add the previous log-weight to the LIDAR/IMU
+log-likelihood before normalizing. Resampling leaves equal weights (history then
+lives in particle multiplicity), while injected hypotheses receive fresh `1/N`
+weights rather than the replaced particle's evidence. Compute recovery quality
+before adding prior weights so accumulated confidence cannot mask a poor scan.
+The existing per-scan IMU likelihood is unchanged; synthetic repeated-update
+checks exercise it with prediction noise but do not calibrate correlated sensor
+evidence on hardware. Run `.venv/bin/python -m unittest tests.test_localisation_motion`
+for motion and weight regressions, including both PCB modes and recovery.
+
 **Problem:** `get_mcl_update_count()` sounds like a count of all processed scans,
 but it returns `LocScanCorrection.sequence`. That sequence advances only when
 both the previous pose and the corrected pose are valid; initial acquisition,
@@ -361,3 +398,19 @@ yaw sampling sigma is 5 degrees, superseding the older 45-degree overview above.
 **Problem:** Camera mounting correction was duplicated between live detection and calibration readouts, while goal alignment assumed image-left was forward. The raw bearing helper subtracts 90 degrees from image `atan2`, so removing the old 270-degree offset does not make image-up forward.
 
 **Solution:** `camera_bearing_offset_deg` in `config.txt` defaults to 270 (image-left forward); use 180 for image-up forward. `Camera` loads it once for ball/bot bearings and the goal-alignment ray, and calibration readouts use the same setting. Restart camera/game/dashboard after changing it. `load_camera_bearing_offset()` reads only this setting without importing Pi GPIO dependencies, preserving standalone desktop calibration/model tools and the legacy default when config is absent.
+
+## Dashboard polling measurements
+
+**Problem:** IMU host polling and sensor report generation are different rates.
+The worker waits after draining a batch, so a 2 ms wait is a 500 Hz ceiling, not
+500 guaranteed polls/sec. The former integer-millisecond interval also could not
+request 400 Hz correctly.
+
+**Solution:** Localisation test rate controls apply on restart, independently
+configuring motor commands, wheel odometry/test ticks, PCB reads, IMU reports and
+host polling. Report intervals now retain fractional milliseconds through conversion
+to microseconds. `timing_diagnostics()` supplies native counters/timings;
+`calibration/polling.py` derives measured rates and mean durations from counter
+changes and elapsed time. Yaw and gyro counts are separate. Receipt ages are not
+sensor latency; PCB durations include bus-lock waiting, while motor/IMU/odometry
+wait and service durations are separate. Rebuild the hardware extension on the Pi.
