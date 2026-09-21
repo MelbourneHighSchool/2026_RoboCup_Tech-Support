@@ -69,9 +69,6 @@ static LocPose g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
 static LocScanCorrection g_last_scan_correction = {};
 static bool g_started = false;
 static bool g_ready = false;
-static bool g_scan_updates_paused = false;
-static float g_last_omega_deg_s = 0.0f;
-static float g_omega_below_resume_s = 0.0f;
 static float g_imu_yaw_deg = 0.0f;
 static bool g_imu_yaw_valid = false;
 static bool g_scan_quality_baseline_valid = false;
@@ -110,9 +107,6 @@ static constexpr float RECOVERY_QUALITY_DROP = 1.5f;
 static constexpr float QUALITY_BASELINE_RISE_ALPHA = 0.20f;
 static constexpr float QUALITY_BASELINE_FALL_ALPHA = 0.002f;
 static constexpr float ESS_RESAMPLE_FRACTION = 0.5f;
-static constexpr float OMEGA_PAUSE_DEG_S = 50.0f;
-static constexpr float OMEGA_RESUME_DEG_S = 25.0f;
-static constexpr float OMEGA_SETTLE_S = 0.15f;
 static constexpr double ODOMETRY_HISTORY_S = 2.0;
 
 static float wrap_angle_deg(float angle);
@@ -653,38 +647,6 @@ static LocPose estimate_pose_from_particles(const Observation* obs, int n,
     return pose;
 }
 
-static void reset_rotation_gate() {
-    g_scan_updates_paused = false;
-    g_last_omega_deg_s = 0.0f;
-    g_omega_below_resume_s = 0.0f;
-}
-
-static void update_rotation_gate(float omega_deg_s, float dt_s) {
-    g_last_omega_deg_s = omega_deg_s;
-    float abs_omega = std::fabs(omega_deg_s);
-
-    if (abs_omega > OMEGA_PAUSE_DEG_S) {
-        g_scan_updates_paused = true;
-        g_omega_below_resume_s = 0.0f;
-        return;
-    }
-
-    if (!g_scan_updates_paused) {
-        g_omega_below_resume_s = 0.0f;
-        return;
-    }
-
-    if (abs_omega < OMEGA_RESUME_DEG_S) {
-        g_omega_below_resume_s += dt_s;
-        if (g_omega_below_resume_s >= OMEGA_SETTLE_S) {
-            g_scan_updates_paused = false;
-            g_omega_below_resume_s = 0.0f;
-        }
-    } else {
-        g_omega_below_resume_s = 0.0f;
-    }
-}
-
 static std::vector<Observation> bin_observations(const LocScanPoint* points, int count,
                                                  float min_range_mm, float max_range_mm,
                                                  int min_quality) {
@@ -845,7 +807,6 @@ void loc_start(bool use_pcb) {
     g_last_scan_correction = {};
     g_ready = false;
     g_started = true;
-    reset_rotation_gate();
 }
 
 void loc_stop() {
@@ -862,7 +823,6 @@ void loc_stop() {
     reset_recovery_state();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
-    reset_rotation_gate();
 }
 
 void loc_reset() {
@@ -879,7 +839,6 @@ void loc_reset() {
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     g_ready = false;
-    reset_rotation_gate();
 }
 
 void loc_set_motion_noise(float speed_coefficient) {
@@ -905,7 +864,6 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
         return;
     }
 
-    update_rotation_gate(omega_deg_s, dt_s);
 
     // Process noise is specified per sqrt(second), so diffusion remains
     // independent of how often predict_odometry() is called.
@@ -994,7 +952,6 @@ void loc_feed_motion(double vx, double vy, double time_s, double read_span_s,
         double omega=0, x=0, y=0;
         motion::History::interpolate(g_motion.gyro,mid,omega);
         g_motion.velocity(mid,x,y);
-        update_rotation_gate(omega,dt);
         for (auto& p : g_particles) propagate_particle(p,x,y,omega,dt,true);
         g_odometry_history.push_back({cuts[i-1],cuts[i],float(x),float(y),float(omega)});
     }
@@ -1172,7 +1129,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
         g_deskew_status.reason="missing_motion"; return;
     }
     g_deskew_status.history_ok=g_timed_motion;
-    // Show motion compensation diagnostics even while the rotation gate is shut.
+    // Compute motion compensation diagnostics before applying the scan correction.
     if (g_ready) {
         Particle diagnostic{g_pose.x,g_pose.y,g_pose.yaw_deg,1};
         if (scan_time_s>0 && !g_odometry_history.empty())
@@ -1181,7 +1138,6 @@ void loc_update_scan(const LocScanPoint* points, int count,
         g_deskew_status.raw_residual_mm=wall_residual(pose,raw_obs);
         g_deskew_status.corrected_residual_mm=wall_residual(pose,obs);
     }
-    if (g_scan_updates_paused) { g_deskew_status.reason="rotation_gate"; return; }
     // Recovery proposals use the epoch of their particle coordinates: the scan
     // epoch in the rewind path, the present in the PCB copy-scoring path.
     struct RestorePrior {
@@ -1365,7 +1321,7 @@ LocLineReadings loc_get_line_readings() {
 
 bool loc_scan_updates_allowed() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
-    return !g_scan_updates_paused;
+    return true; // Compatibility API: angular speed no longer gates scan corrections.
 }
 
 bool loc_is_ready() {

@@ -60,7 +60,7 @@ static void timing_and_readiness() {
     const double newest = monotonic_time_s();
     submit(sample_for({350,900,0,1},newest));
     loc_predict_odometry(0,0,100,0.02);
-    assert(!loc_scan_updates_allowed());
+    assert(loc_scan_updates_allowed());
     assert(loc_get_line_readings().applied_count == 2);
     assert(loc_get_line_readings().last_applied_timestamp_s == newest);
     loc_predict_odometry(0,0,100,0.02);
@@ -126,7 +126,6 @@ static float rate_run(double interval, int count) {
         g_line_readings.colours = sample.colours;
         g_line_readings.timestamp_s = now;
         g_line_readings.valid = true;
-        g_scan_updates_paused = true;
         apply_pending_line_readings_locked(now);
         assert(g_line_readings.applied_count == static_cast<unsigned>(i+1));
         assert(g_pose.ok && g_pose.confidence == 0.8f);

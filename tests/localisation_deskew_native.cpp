@@ -137,22 +137,21 @@ static void timing_and_resets() {
     assert(g_odometry_history.empty() && !g_pose.ok);
 }
 
-static void gated_diagnostics_and_prior() {
+static void high_speed_diagnostics_and_prior() {
     setup(0,0,90);
     g_timed_motion=true; g_pose_time=10.2;
     for (int i=0; i<40; ++i)
         g_odometry_history.push_back({9.8+i*0.01,9.8+(i+1)*0.01,0,0,90});
     g_ready=true; g_pose=truth; g_pose.yaw_deg+=18;
-    g_scan_updates_paused=true;
     const auto scan=moving_scan(0,0,90);
     loc_update_scan(scan.data(),scan.size(),80,6000,5,10);
     const auto status=loc_get_deskew_status();
-    assert(status.reason=="rotation_gate" && !status.accepted && status.history_ok);
+    assert(status.reason=="accepted" && status.accepted && status.history_ok);
     assert(status.raw_residual_mm>10 && status.corrected_residual_mm<0.02);
     assert(std::abs(status.max_rotation_deg-4.5)<0.001);
     assert(std::abs(status.duration_s-0.1)<1e-9);
     // A delayed scan must use interpolated yaw=12, not current yaw=30.
-    g_scan_updates_paused=false; g_imu_yaw_valid=true; g_imu_yaw_deg=30;
+    g_imu_yaw_valid=true; g_imu_yaw_deg=30;
     for (auto& p : g_particles) p={truth.x,truth.y,30,1.0f/PARTICLE_COUNT};
     loc_update_scan(scan.data(),scan.size(),80,6000,5,10);
     assert(loc_get_deskew_status().accepted);
@@ -175,7 +174,7 @@ static void gated_diagnostics_and_prior() {
 
 int main() {
     geometry(); bearings_and_unknowns(); history_checks(); timing_and_resets();
-    gated_diagnostics_and_prior();
+    high_speed_diagnostics_and_prior();
     loc_stop(); loc_configure_deskew("off"); loc_set_replay_time(-1);
     std::cout << "Deskew geometry, slip, timing, reset and gate checks passed\n";
 }
