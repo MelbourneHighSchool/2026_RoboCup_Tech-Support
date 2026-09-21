@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import pytest
 
+from calibration.ball_distance import calculate_ball_bearing_deg
 from calibration.dashboard import (
     Dashboard,
     Lease,
@@ -198,12 +199,17 @@ def test_masks_pixel_picker_and_lossless_frozen_frame(dashboard):
         dashboard.frozen_frame(frozen["id"])
 
 
-def test_scene_does_not_paint_source_frame(dashboard):
+def test_scene_does_not_paint_source_frame(dashboard, monkeypatch):
+    monkeypatch.setattr("calibration.dashboard.load_camera_bearing_offset", lambda: 123.0)
     install_snapshot(dashboard)
     snap = dashboard.latest
     original = snap["frame"].copy()
     overlay, results = scene(snap["frame"], snap["ball"], snap["bots"], None)
     assert [d["label"] for d in results] == ["Ball", "Bot"]
+    assert [d["bearing"] for d in results] == [
+        calculate_ball_bearing_deg(*d.get("point", d["centre"]), *snap["frame"].shape[1::-1]) + 123.0
+        for d in (snap["ball"], snap["bots"][0])
+    ]
     assert all(d["distance"] is None for d in results)
     assert not np.array_equal(overlay, original)
     np.testing.assert_array_equal(snap["frame"], original)

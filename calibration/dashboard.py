@@ -22,6 +22,7 @@ from calibration.ball_distance import (
     save_distance_calibration,
 )
 from calibration.dashboard_hardware import PITCH, Hardware
+from lib.config import load_camera_bearing_offset
 from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
 
 
@@ -161,13 +162,14 @@ def scene(frame, ball, bots, calibration, bot_calibration=None):
     """Render only detections belonging to this exact source frame."""
     overlay = frame.copy()
     height, width = frame.shape[:2]
+    bearing_offset = load_camera_bearing_offset()
     results = []
     for label, detections, colour in (("Ball", [ball] if ball else [], (0, 165, 255)),
                                       ("Bot", bots, (255, 180, 30))):
         for detection in detections:
             x, y, w, h = detection["bbox"]
             point = detection.get("point", detection["centre"])
-            bearing = calculate_ball_bearing_deg(*point, width, height) + 270
+            bearing = calculate_ball_bearing_deg(*point, width, height) + bearing_offset
             distance = predict_distance_from_calibration(
                 calibration if label == "Ball" else bot_calibration, detection["radial_pixels"]
             )
