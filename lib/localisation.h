@@ -2,6 +2,8 @@
 #define LOCALISATION_H
 
 #include <cstdint>
+#include <array>
+#include <string>
 #include <vector>
 
 struct LocScanPoint {
@@ -26,6 +28,19 @@ struct LocParticle {
     float weight;
 };
 
+// Optional independent floor-colour observations, enabled after a LIDAR fix.
+// Sensor 0 is forward, clockwise order, all at radius 75 mm.
+struct LocLineReadings {
+    std::array<std::string, 32> colours;
+    double timestamp_s = 0.0;
+    unsigned long long applied_count = 0;
+    double last_applied_timestamp_s = 0.0;
+    bool valid = false;
+};
+void loc_set_line_readings(const std::vector<std::string>& colours, double timestamp_s);
+void loc_clear_line_readings();
+LocLineReadings loc_get_line_readings();
+
 // Odometry-interpolated pose vs LIDAR-corrected pose for the last scan update.
 struct LocScanCorrection {
     std::uint64_t sequence;  // increments on each recorded correction
@@ -49,7 +64,7 @@ struct LocRecoveryStatus {
 };
 
 void loc_init_map(float pitch_x, float pitch_y);
-void loc_start();
+void loc_start(bool use_pcb = false);
 void loc_stop();
 void loc_reset();
 

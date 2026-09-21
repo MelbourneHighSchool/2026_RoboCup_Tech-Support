@@ -9,13 +9,22 @@ namespace py = pybind11;
 using hardware::HardwareController;
 
 namespace {
+// Dashboard-only reader: owns no motors, IMU, GPIO, or command interface.
+class PcbSensorReader {
+public:
+    explicit PcbSensorReader(const std::string& device) : wire_(device), pcb_(wire_) {}
+    std::array<uint8_t, 32> read_sensors() { return pcb_.read_sensors(); }
+private:
+    LinuxWire wire_;
+    hardware::Pcb pcb_;
+};
 std::unique_ptr<HardwareController> from_addresses(
     const std::vector<int>& addresses, double diameter, double max_yaw_rpm,
     double max_rpm, double yaw_correct_threshold, const std::string& calibration_file,
     const std::string& i2c_device, int imu_address, int imu_report_interval_ms,
     int kicker_pin, const std::string& kicker_gpiochip, double drive_motor_current_limit,
     double dribbler_motor_current_limit, double kick_pulse_length, double kick_cooldown,
-    std::shared_ptr<hardware::StatusDisplay> display) {
+    std::shared_ptr<hardware::StatusDisplay> display, bool use_pcb) {
     // File parsing runs once with the GIL. All motor I/O and control are native C++.
     std::filesystem::path path(calibration_file);
     if (path.is_relative()) {
@@ -53,10 +62,14 @@ std::unique_ptr<HardwareController> from_addresses(
     return std::make_unique<HardwareController>(calibration,
         hardware::DriveConfig{diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold}, i2c_device,
         nullptr, imu_address, imu_report_interval_ms, kicker_pin, kicker_gpiochip, nullptr,
-        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown, std::move(display));
+        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown, std::move(display), use_pcb);
 }
 }
 PYBIND11_MODULE(hardware_controller, module) {
+    py::class_<PcbSensorReader>(module, "PcbSensorReader")
+        .def(py::init<const std::string&>(), py::arg("i2c_device") = "/dev/i2c-1")
+        .def("read_sensors", &PcbSensorReader::read_sensors,
+             py::call_guard<py::gil_scoped_release>());
     module.doc() = "Native hardware controller: motors, BNO08x IMU and GPIO kicker";
     py::register_exception<hardware::MotorCommunicationError>(module, "MotorCommunicationError");
     py::class_<hardware::StatusDisplay, std::shared_ptr<hardware::StatusDisplay>>(module, "StatusDisplay")
@@ -79,7 +92,7 @@ PYBIND11_MODULE(hardware_controller, module) {
             py::arg("drive_motor_current_limit") = 8.0,
             py::arg("dribbler_motor_current_limit") = 1.0,
             py::arg("kick_pulse_length") = 0.02, py::arg("kick_cooldown") = 0.5,
-            py::arg("display") = nullptr)
+            py::arg("display") = nullptr, py::arg("use_pcb") = false)
         .def("move", &HardwareController::move, py::arg("direction"), py::arg("speed"),
              py::arg("rotation"), py::arg("rotation_speed"),
              py::arg("dribbler") = 0, py::arg("kick") = false,
@@ -93,6 +106,15 @@ PYBIND11_MODULE(hardware_controller, module) {
             result["error"] = h.error; result["motor_address"] = h.motor_address;
             return result;
         })
+        .def("get_pcb_snapshot", [](const HardwareController& self) {
+            const auto snapshot = self.get_pcb_snapshot();
+            py::dict result;
+            result["readings"] = snapshot.readings;
+            result["timestamp_s"] = snapshot.timestamp_s;
+            result["age_s"] = snapshot.age_s;
+            result["valid"] = snapshot.valid;
+            return result;
+        }, "Return a copied PCB snapshot; check valid and age_s before use.")
         .def("get_raw_imu_yaw", &HardwareController::get_raw_imu_yaw)
         .def("set_drive_current_limits", &HardwareController::set_drive_current_limits,
              py::arg("constant_speed_amps"), py::arg("acceleration_amps"),

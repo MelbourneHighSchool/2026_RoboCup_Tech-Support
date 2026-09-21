@@ -10,9 +10,10 @@ WHEEL_DIAMETER = 50
 MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 1000
 YAW_CORRECT_THRESHOLD = 3
+USE_PCB = False
 
 
-def create_hardware(*, max_motor_rpm=MAX_MOTOR_RPM, kicker=False):
+def create_hardware(*, max_motor_rpm=MAX_MOTOR_RPM, kicker=False, use_pcb=USE_PCB):
     config = load_config()
     kwargs = {"kicker_pin": int(config.kicker_pin.id)} if kicker else {}
     return HardwareController.from_i2c_addresses(
@@ -21,6 +22,7 @@ def create_hardware(*, max_motor_rpm=MAX_MOTOR_RPM, kicker=False):
         MAX_YAW_RPM,
         max_motor_rpm,
         YAW_CORRECT_THRESHOLD,
+        use_pcb=use_pcb,
         **kwargs,
     )
 

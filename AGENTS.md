@@ -299,6 +299,63 @@ while the operator has paused, then calls `set_startup_yaw()` before permitting 
 later run transition. Raw scan progress remains independent of localization
 confidence and gating when diagnosing LIDAR outages.
 
+## Dashboard line sensor calibration
+
+**Problem:** Reading PCB sensors through `HardwareController` requires motor/IMU
+initialization and enabling its PCB backend, which is inappropriate for a standalone
+line calibration page.
+
+**Solution:** The dashboard uses native `PcbSensorReader`, a read-only wrapper around
+`Pcb` and its own Linux I2C transport, in its hardware worker. It runs exclusively
+with respect to dashboard driving, calibration, and localisation; stop localisation
+before starting it, and run the dashboard separately from the game. No motor arming
+or `USE_PCB` change is needed. Rebuild the hardware extension after adding this binding.
+The Line sensors page previews black/green/white on a 32-sensor ring of radius 75 mm,
+with index 0 forward and increasing clockwise. `line_sensor_calibration.json` stores
+raw-byte black/white thresholds; green is strictly between them and reversed polarity
+is supported. Grey means invalid or older than 0.5 seconds. Initial 64/192 values are
+provisional, not measured calibration. `lib/line_sensors.py` shares threshold
+validation with the dashboard and classifies fresh PCB snapshots in Python.
+The game and dashboard localisation feed these via `lidar.set_line_readings`;
+inspect with `lidar.get_line_readings()`. Each entry point owns `USE_PCB = False`
+and passes it to hardware, the Python feed, and localisation at startup. The
+dashboard CLI passes its flag through `Dashboard` and `Hardware`; standalone
+sensor calibration still reads the PCB independently. Restart localisation to
+reload saved thresholds.
+
+**Floor model:** `lib/localisation.cpp` uses the paint geometry in `simulate.py`
+(50 mm white border drawn inward from 250 mm, black goal-box lines and three
+black spots), separately from the LIDAR wall/goal map. Enabled observations score
+particle copies at the PCB timestamp via odometry history in an independent
+update after prediction. Applying floor likelihood only inside the LIDAR callback
+silently prevented corrections during rotation gating and disconnects. Both
+sensor updates now retain prior weights when PCB is enabled; delayed scoring uses
+copies so later PCB evidence survives an older LIDAR scan. PCB updates keep LIDAR
+confidence/readiness unchanged. Samples newer than the prediction horizon wait
+for the next prediction, with only the newest pending sample retained. The
+`applied_count` and `last_applied_timestamp_s` diagnostics distinguish applied
+corrections from merely available readings for `ODOM+PCB` outage reporting.
+Variable prediction/scoring delays can leave gaps or overlaps when every history
+step independently starts at `now - dt`. In PCB mode, intervals join at the
+previous prediction endpoint, with recorded rates scaled to reproduce the exact
+motion integrated with the caller's `dt`.
+Stale or already-consumed readings are skipped; the rotation gate only gates LIDAR. Keep floor
+likelihood out of the LIDAR recovery-quality baseline. Validate paint dimensions
+and likelihood strength on the real pitch before enabling it in operation.
+
+## Localisation diagnostic interpretation
+
+**Problem:** `get_mcl_update_count()` sounds like a count of all processed scans,
+but it returns `LocScanCorrection.sequence`. That sequence advances only when
+both the previous pose and the corrected pose are valid; initial acquisition,
+rejected scans, and low-confidence updates do not necessarily advance it.
+
+**How to interpret it:** Use `get_scan_generation()` for acquisition progress
+and the correction sequence for confident correction progress. Neither counter
+alone describes all estimator activity. Also check current tuning in
+`lib/localisation.cpp`: the IMU prior sigma is currently 8 degrees and initial
+yaw sampling sigma is 5 degrees, superseding the older 45-degree overview above.
+
 ## Camera mount bearing offset
 
 **Problem:** Camera mounting correction was duplicated between live detection and calibration readouts, while goal alignment assumed image-left was forward. The raw bearing helper subtracts 90 degrees from image `atan2`, so removing the old 270-degree offset does not make image-up forward.

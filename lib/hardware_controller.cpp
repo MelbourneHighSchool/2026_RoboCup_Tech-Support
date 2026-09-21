@@ -1,9 +1,11 @@
 #include "hardware_controller.h"
+#include "pcb.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <set>
 
 namespace hardware {
@@ -84,8 +86,9 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
                                      double drive_motor_current_limit,
                                      double dribbler_motor_current_limit,
                                      double kick_pulse_length, double kick_cooldown,
-                                     std::shared_ptr<StatusDisplay> display) :
+                                     std::shared_ptr<StatusDisplay> display, bool use_pcb) :
     config_(config),
+    use_pcb_(use_pcb),
     drive_motor_current_limit_(current_limit_lsb(drive_motor_current_limit)),
     dribbler_motor_current_limit_(current_limit_lsb(dribbler_motor_current_limit)),
     constant_speed_current_limit_(drive_motor_current_limit_),
@@ -107,6 +110,9 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
     if (kicker_pin < -1 || kicker_pin > 27)
         throw std::invalid_argument("Kicker pin must be -1 (disabled) or BCM GPIO 0..27");
     display_ = std::move(display);
+    if (use_pcb_ && (addresses.count(0x37) || imu_address == 0x37 ||
+                    (display_ && display_->address() == 0x37)))
+        throw std::invalid_argument("PCB address 0x37 conflicts with another device");
     if (display_ && (transport || addresses.count(display_->address()) || imu_address == display_->address()))
         throw std::invalid_argument("Display transport/address conflicts with controller");
     wire_ = display_ ? display_->bus() : (transport ? std::shared_ptr<TwoWire>(std::move(transport)) :
@@ -114,8 +120,8 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
     for (const auto& cal : calibration) addresses_.push_back(cal.address);
     // Claim the singleton SH-2 session before any motor writes.
     imu_ = std::make_unique<LinuxBno08x>(*wire_, imu_address, imu_report_interval_ms);
-    kicker_ = std::move(kicker_output);
-    if (!kicker_ && kicker_pin >= 0)
+    if (!use_pcb_) kicker_ = std::move(kicker_output);
+    if (!use_pcb_ && !kicker_ && kicker_pin >= 0)
         kicker_ = std::make_unique<LinuxKickerOutput>(kicker_pin, kicker_gpiochip);
     motors_.reserve(calibration.size());
     std::string init_source = "MOTOR";
@@ -178,6 +184,10 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         running_ = true;
         imu_thread_ = std::thread(&HardwareController::imu_loop, this);
         if (kicker_) kicker_thread_ = std::thread(&HardwareController::kicker_loop, this);
+        if (use_pcb_) {
+            pcb_ = std::make_unique<Pcb>(*wire_);
+            pcb_thread_ = std::thread(&HardwareController::pcb_loop, this);
+        }
         thread_ = std::thread(&HardwareController::drive_loop, this);
     } catch (const std::exception& exc) {
         {
@@ -186,6 +196,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         }
         wake_.notify_all();
         if (kicker_thread_.joinable()) kicker_thread_.join();
+        if (pcb_thread_.joinable()) pcb_thread_.join();
         if (imu_thread_.joinable()) imu_thread_.join();
         std::lock_guard<std::mutex> bus_lock(wire_->mutex);
         imu_->close();
@@ -228,6 +239,16 @@ void HardwareController::check_imu_locked() {
     last_imu_fresh_ = fresh;
     imu_unavailable_ = unavailable;
 }
+PcbSnapshot HardwareController::get_pcb_snapshot() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto snapshot = pcb_snapshot_;
+    if (snapshot.timestamp_s) {
+        const double now = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        snapshot.age_s = now - *snapshot.timestamp_s;
+    }
+    return snapshot;
+}
 HardwareHealth HardwareController::health() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const auto sample = imu_->snapshot();
@@ -249,7 +270,7 @@ void HardwareController::move(double direction, double speed, double rotation,
         throw std::invalid_argument("Speed out of range or dribbler not in -1..1");
     std::lock_guard<std::mutex> lock(state_mutex_);
     check_state();
-    if (kick && !kicker_) throw std::invalid_argument("Kick requested without a configured kicker_pin");
+    if (kick && !kicker_ && !use_pcb_) throw std::invalid_argument("Kick requested without a configured kicker_pin or PCB");
     // Like kicker.py, ignore requests during an active pulse or the 0.5 s cooldown.
     // Do not queue an old request to fire when the cooldown expires.
     const bool accepted_kick = kick && !kicking_ && std::chrono::steady_clock::now() >= next_kick_time_;
@@ -259,6 +280,7 @@ void HardwareController::move(double direction, double speed, double rotation,
 }
 void HardwareController::fail(const std::string& message, const std::string& source, int address) {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    pcb_snapshot_.valid = false;
     if (error_.find(message) == std::string::npos) {
         if (!error_.empty()) error_ += "; ";
         error_ += message;
@@ -337,13 +359,18 @@ void HardwareController::stop() {
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         running_ = false;
+        pcb_snapshot_.valid = false;
     }
     wake_.notify_all();
-    // Join the GPIO worker first: pulse termination must not wait for I2C shutdown.
-    if (kicker_thread_.joinable()) kicker_thread_.join();
     std::string kicker_errors;
-    if (kicker_) {
-        try { kicker_->close(); } catch (const std::exception& exc) { kicker_errors = exc.what(); }
+    if (use_pcb_) {
+        if (pcb_thread_.joinable()) pcb_thread_.join();
+    } else {
+        // Join the GPIO worker first: pulse termination must not wait for I2C shutdown.
+        if (kicker_thread_.joinable()) kicker_thread_.join();
+        if (kicker_) {
+            try { kicker_->close(); } catch (const std::exception& exc) { kicker_errors = exc.what(); }
+        }
     }
     if (thread_.joinable()) thread_.join();
     if (imu_thread_.joinable()) imu_thread_.join();
@@ -411,6 +438,40 @@ void HardwareController::kicker_loop() noexcept {
     std::lock_guard<std::mutex> lock(state_mutex_);
     kicking_ = false;
     target_.kick = false;
+}
+void HardwareController::pcb_loop() noexcept {
+    using Clock = std::chrono::steady_clock;
+    const auto period = std::chrono::milliseconds(20); // 50 Hz
+    auto next = Clock::now() + period;
+    try {
+        while (running_) {
+            bool kick;
+            {
+                std::unique_lock<std::mutex> lock(state_mutex_);
+                wake_.wait_until(lock, next, [&] { return !running_; });
+                if (!running_) break;
+                kick = target_.kick;
+                target_.kick = false; // Consume each request once.
+                if (kick) next_kick_time_ = Clock::now() + kick_cooldown_;
+            }
+            // Pcb takes the bus mutex; never hold state_mutex_ during I/O.
+            if (kick) pcb_->kick();
+            const auto scan = pcb_->read_sensors();
+            const double timestamp = std::chrono::duration<double>(
+                Clock::now().time_since_epoch()).count();
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                // A stop/fault may have occurred while the read was in flight.
+                if (!running_) break;
+                pcb_snapshot_ = {scan, timestamp, std::nullopt, true};
+            }
+            next += period;
+            const auto now = Clock::now();
+            if (next <= now) next = now + period; // Skip missed polls after a stall.
+        }
+    } catch (const std::exception& exc) {
+        fail("PCB communication failed: " + std::string(exc.what()), "OTHER");
+    }
 }
 void HardwareController::drive_loop() noexcept {
     using Clock = std::chrono::steady_clock; // Measures elapsed time

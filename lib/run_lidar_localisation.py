@@ -21,6 +21,8 @@ import time
 
 from lib import lidar
 
+USE_PCB = False
+
 PITCH_X = 2430
 PITCH_Y = 1820
 DEFAULT_PORT = "/dev/ttyUSB1"
@@ -137,7 +139,7 @@ def main() -> int:
 
     # Seed the yaw prior before MCL starts so init particles sample around 0°.
     lidar.set_imu_yaw(ASSUMED_IMU_YAW_DEG)
-    lidar.start_coordinates(PITCH_X, PITCH_Y)
+    lidar.start_coordinates(PITCH_X, PITCH_Y, use_pcb=USE_PCB)
     wait_for_pose()
     print("Printing pose (Ctrl+C to stop):\n")
 

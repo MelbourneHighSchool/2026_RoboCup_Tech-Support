@@ -4,6 +4,10 @@ import math
 import time
 from dataclasses import asdict, dataclass
 
+from lib.line_sensors import LineSensorFeed
+
+USE_PCB = False
+
 
 @dataclass(frozen=True)
 class OdometryDiagnostics:
@@ -128,6 +132,7 @@ def predict_odometry(
     last_pose_time,
     *,
     apply_trust=False,
+    line_feed=None,
 ):
     """Feed raw wheel and gyro measurements into MCL, retaining diagnostic trust.
 
@@ -135,6 +140,8 @@ def predict_odometry(
     Fused-pose velocity is not independent evidence of wheel slip.
     """
     now = time.monotonic()
+    if movement_controller is None and hasattr(imu, "get_measured_body_velocity_mm_s"):
+        movement_controller = imu
     dt = now - last_pose_time
     omega = 0.0
     gyro_z = imu.get_gyro_z_deg_s()
@@ -164,6 +171,8 @@ def predict_odometry(
         vy = scale * vy_wheel
 
     lidar_module.predict_odometry(vx, vy, omega, dt)
+    if line_feed is not None:
+        line_feed.update(lidar_module, imu)
     diagnostics = OdometryDiagnostics(
         dt_s=dt,
         omega_deg_s=omega,
@@ -189,12 +198,13 @@ class LocalisationSession:
     ROTATION_PREDICTION_TIMEOUT_S = 3.0
     SCAN_RESUME_TIMEOUT_S = 0.5
 
-    def __init__(self, lidar, imu, startup_yaw, velocity, clock=time.monotonic):
+    def __init__(self, lidar, imu, startup_yaw, velocity, clock=time.monotonic, *, line_feed=None, use_pcb=USE_PCB):
         self.lidar = lidar
         self.imu = imu
         self.startup_yaw = startup_yaw
         self.velocity = velocity
         self.clock = clock
+        self.line_feed = (line_feed or LineSensorFeed(use_pcb=use_pcb)) if use_pcb else None
         self.last_time = clock()
         self.last_yaw = 0.0
         self.scan_generation = -1
@@ -212,7 +222,7 @@ class LocalisationSession:
         now = self.clock()
         self.last_time, odometry = predict_odometry(
             self.lidar, controller, self.imu, self.startup_yaw,
-            self.velocity, self.last_yaw, self.last_time,
+            self.velocity, self.last_yaw, self.last_time, line_feed=self.line_feed,
         )
         pose = self.lidar.get_coordinates_info()
         x, y, yaw, confidence, ok = pose

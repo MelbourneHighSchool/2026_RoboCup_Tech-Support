@@ -8,6 +8,8 @@ import argparse
 import math
 import time
 
+USE_PCB = False
+
 
 def wait_stationary(hardware):
     hardware.move(0, 0, 0, 0)
@@ -114,8 +116,7 @@ def main(argv=None):
     try:
         hardware = HardwareController.from_i2c_addresses(
             config.i2c_addresses, WHEEL_DIAMETER, MAX_YAW_RPM,
-            MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD, drive_motor_current_limit=current,
-        )
+            MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD, drive_motor_current_limit=current, use_pcb=USE_PCB)
         set_startup_yaw(hardware)
         while True:
             print(f"Testing {current:g} A drive current", flush=True)

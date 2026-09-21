@@ -5,13 +5,15 @@ from lib.hardware_controller import MotorCommunicationError
 
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
+USE_PCB = False
+
 COMMAND_INTERVAL = 0.05
 
 
 def main():
     hardware = None
     try:
-        hardware = create_hardware(max_motor_rpm=400)
+        hardware = create_hardware(max_motor_rpm=400, use_pcb=USE_PCB)
         startup = set_startup_yaw(hardware)
         print(f"Startup yaw reference set to {startup:.6f} deg")
         print("Running native move test. Press Ctrl+C to stop.")

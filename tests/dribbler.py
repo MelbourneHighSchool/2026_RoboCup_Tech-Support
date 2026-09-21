@@ -7,6 +7,8 @@ from lib.hardware_controller import HardwareController
 from lib.config import load_config
 from lib.hardware_test_utils import WHEEL_DIAMETER, YAW_CORRECT_THRESHOLD
 
+USE_PCB = False
+
 DRIBBLER_TORQUE = 1.0  # Amps
 RPM_PRINT_INTERVAL = 0.25
 
@@ -25,8 +27,7 @@ def main():
             0,
             YAW_CORRECT_THRESHOLD,
             drive_motor_current_limit=0.0,
-            dribbler_motor_current_limit=DRIBBLER_TORQUE,
-        )
+            dribbler_motor_current_limit=DRIBBLER_TORQUE, use_pcb=USE_PCB)
         print(f"Spinning dribbler at {DRIBBLER_TORQUE:g} A. Press Ctrl+C to stop.")
         next_rpm_print = time.monotonic()
         while True:

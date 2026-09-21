@@ -1,8 +1,12 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const lineTab = document.createElement('button');
+lineTab.dataset.tab = 'lineSensors'; lineTab.textContent = 'Line sensors';
+document.querySelector('nav').append(lineTab);
 let token = null, state = null, tab = 'camera', frozen = null, thresholds = null;
 let editUntil = 0, messageUntil = 0, lastEvent = '', samplesSignature = '', fitSignature = '';
 let modelsSignature = '';
+let lineDirty = false, lineLoaded = false, lineEditVersion = 0;
 const fmt = (v, digits = 1) => v == null ? 'unavailable' : Number(v).toFixed(digits);
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function message(text) { $('message').textContent = text; messageUntil = Date.now() + 10000; }
@@ -25,6 +29,93 @@ $('claim').onclick = async () => { try { token = (await api('claim')).token; mes
 $('release').onclick = async () => { try { await api('release'); token = null; } catch (e) { message(e.message); } };
 handle('stop', 'stop');
 handle('startGpio', 'gpio');
+handle('pcbStart', 'pcb_start');
+handle('pcbStop', 'pcb_stop');
+function lineValues() {
+  const black = Number($('lineBlack').value), white = Number($('lineWhite').value);
+  if (['lineBlack', 'lineWhite'].some(id => $(id).value === '') ||
+      ![black, white].every(v => Number.isInteger(v) && v >= 0 && v <= 255) || black === white)
+    throw new Error('Enter different whole-number thresholds between 0 and 255.');
+  return {black, white};
+}
+function lineColour(value, black, white) {
+  if (black < white) return value <= black ? 'black' : value >= white ? 'white' : 'green';
+  return value >= black ? 'black' : value <= white ? 'white' : 'green';
+}
+let lineNodes = [], lineReceivedAt = 0;
+function renderLineSensors(s) {
+  if (!lineNodes.length) {
+    const svg = $('sensorRing'), ns = 'http://www.w3.org/2000/svg';
+    const element = (name, attrs, text) => {
+      const node = document.createElementNS(ns, name);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+      if (text != null) node.textContent = text;
+      svg.append(node); return node;
+    };
+    element('circle', {cx:300, cy:300, r:210, fill:'none', stroke:'#486070', 'stroke-dasharray':'4 6'});
+    element('text', {x:300, y:22, 'text-anchor':'middle', fill:'#e9f0f4'}, 'FRONT ↑');
+    element('text', {x:300, y:295, 'text-anchor':'middle', fill:'#a2b5c3'}, '75 mm radius');
+    element('text', {x:300, y:322, 'text-anchor':'middle', fill:'#a2b5c3'}, '32 sensors · clockwise →');
+    for (let i = 0; i < 32; i++) {
+      const angle = i * Math.PI / 16;
+      const circle = element('circle', {cx:300+210*Math.sin(angle), cy:300-210*Math.cos(angle), r:16, stroke:'#93a7b3', 'stroke-width':2});
+      const title = document.createElementNS(ns, 'title'); circle.append(title);
+      element('text', {x:300+245*Math.sin(angle), y:305-245*Math.cos(angle), 'text-anchor':'middle', fill:'#e9f0f4'}, String(i));
+      const card = document.createElement('div'); card.className = 'sensor-reading'; $('sensorReadings').append(card);
+      lineNodes.push({circle, title, card});
+    }
+  }
+  if (s?.line_thresholds && (!lineLoaded || !lineDirty)) {
+    setLineValues(s.line_thresholds); lineLoaded = true;
+  }
+  let values;
+  try { values = lineValues(); } catch (e) { $('lineRule').textContent = e.message; }
+  if (values) {
+    const {black, white} = values;
+    $('lineRule').textContent = `Black ${black < white ? '≤' : '≥'} ${black} · Green between · White ${black < white ? '≥' : '≤'} ${white}`;
+  }
+  $('lineEditStatus').textContent = lineDirty ? 'Unsaved preview' : 'Showing saved thresholds (64 / 192 are provisional defaults).';
+  const pcb = s?.hardware.pcb;
+  const age = pcb?.age_s == null ? null : pcb.age_s + (performance.now() - lineReceivedAt) / 1000;
+  const fresh = pcb?.valid && age != null && age <= 0.5 && pcb.readings?.length === 32;
+  const colours = {black:'#080c10', green:'#279b58', white:'#ffffff', unavailable:'#50616e'};
+  lineNodes.forEach(({circle, title, card}, i) => {
+    const raw = fresh ? pcb.readings[i] : null;
+    const colour = raw != null && values ? lineColour(raw, values.black, values.white) : 'unavailable';
+    circle.setAttribute('fill', colours[colour]);
+    title.textContent = `Sensor ${i} · ${i*11.25}° · ${raw ?? '—'} · ${colour}`;
+    card.textContent = `${i}: ${raw ?? '—'} · ${colour}`;
+    card.style.borderLeftColor = colours[colour];
+  });
+  $('pcbStatus').textContent = fresh ? `Live · sample age ${fmt(age, 2)} s · black / green / white`
+    : pcb?.valid ? 'Readings are stale — sensors shown grey.'
+    : s?.hardware.error ? `Unavailable: ${s.hardware.error}` : 'No live readings. Start sensors to connect.';
+}
+function setLineValues(values) {
+  for (const colour of ['Black', 'White'])
+    $( 'line' + colour).value = $('line' + colour + 'Slider').value = values[colour.toLowerCase()];
+}
+for (const colour of ['Black', 'White']) {
+  for (const suffix of ['', 'Slider']) $('line' + colour + suffix).oninput = () => {
+    $('line' + colour + (suffix ? '' : 'Slider')).value = $('line' + colour + suffix).value;
+    lineDirty = true; lineEditVersion++; renderLineSensors(state);
+  };
+}
+$('saveLine').onclick = async () => {
+  try {
+    const values = lineValues(), version = lineEditVersion;
+    await api('save_line_thresholds', values);
+    if (version === lineEditVersion) {
+      lineDirty = false;
+      if (state) state.line_thresholds = values;
+    }
+    message('Line sensor thresholds saved.');
+  } catch (e) { message(e.message); }
+};
+$('revertLine').onclick = () => {
+  if (!state?.line_thresholds) return;
+  lineDirty = false; lineEditVersion++; setLineValues(state.line_thresholds); renderLineSensors(state);
+};
 handle('kick', 'kick');
 handle('applyGain', 'analogue_gain', () => ({gain:$('analogueGain').value}));
 for (const button of document.querySelectorAll('.arm')) button.onclick = async () => { try { await api('arm'); } catch (e) { message(e.message); } };
@@ -126,10 +217,14 @@ function readings(element, rows) {
   element.innerHTML = rows.map(([label,value]) => `<div class="reading"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
 }
 function render(s) {
+  lineReceivedAt = performance.now();
+  renderLineSensors(s);
   state = s;
   $('leaseStatus').textContent = token ? (s.control.armed ? 'Controller · ARMED' : 'Controller · disarmed') : (s.control.occupied ? 'Viewer · controller connected' : 'Viewer');
   $('claim').disabled = !!token || s.control.occupied;
   document.querySelectorAll('.control').forEach(e => { e.disabled = !token; });
+  $('pcbStart').disabled = !token || !['idle', 'stopped', 'monitoring'].includes(s.hardware.mode) || s.hardware.localisation != null;
+  $('pcbStop').disabled = !token || !['pcb', 'queued pcb_start', 'starting pcb_start'].includes(s.hardware.mode);
   document.querySelectorAll('.arm').forEach(e => { e.disabled = !token || s.control.armed; });
   $('calibrate').disabled = $('drive').disabled = !token || !s.control.armed;
   $('kick').disabled = !token || !s.control.armed;
@@ -234,7 +329,7 @@ function drawPitch(hardware) {
 $('pitch').onclick=event=>{const rect=$('pitch').getBoundingClientRect();$('targetX').value=Math.round(Math.max(0,Math.min(2430,((event.clientX-rect.left)/rect.width*800-mapX)/mapScale)));$('targetY').value=Math.round(Math.max(0,Math.min(1820,((event.clientY-rect.top)/rect.height*640-mapY)/mapScale)));if(state)drawPitch(state.hardware);};
 for(const id of ['targetX','targetY'])$(id).oninput=()=>{if(state)drawPitch(state.hardware);};
 async function heartbeat(){if(token){try{await api('heartbeat');}catch(e){token=null;message(e.message);}}setTimeout(heartbeat,500);}
-async function poll(){try{const response=await fetch('/api/state');if(!response.ok)throw new Error('Status unavailable');render(await response.json());}catch(e){$('health').textContent='DISCONNECTED · motor control will expire automatically';}setTimeout(poll,300);}
+async function poll(){try{const response=await fetch('/api/state');if(!response.ok)throw new Error('Status unavailable');render(await response.json());}catch(e){$('health').textContent='DISCONNECTED · motor control will expire automatically';renderLineSensors(null);}setTimeout(poll,300);}
 window.addEventListener('pagehide',()=>{if(token)fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:'{}',keepalive:true}).catch(()=>{});});
 streams(); heartbeat(); poll();
 

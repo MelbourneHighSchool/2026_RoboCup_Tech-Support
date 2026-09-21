@@ -32,6 +32,8 @@
 #include "localisation.h"
 #include "sl_lidar_driver.h"
 
+constexpr bool USE_PCB = false;
+
 #ifndef _countof
 #define _countof(array) (int)(sizeof(array) / sizeof((array)[0]))
 #endif
@@ -349,7 +351,7 @@ int main(int argc, char** argv) {
     if (yaw_supplied) {
         loc_set_imu_yaw(imu_yaw_deg);
     }
-    loc_start();
+    loc_start(USE_PCB);
 
     bool running = true;
     double last_predict_time_s = monotonic_time_s();

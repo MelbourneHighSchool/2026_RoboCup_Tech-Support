@@ -230,3 +230,73 @@ Check simultaneous faults, motor-address reporting, missing OLED operation, and
 blanking on normal/error exit. Compare `main.py --fps` drive/IMU rates with display
 updates active against the prior baseline. Physical timing and driver response
 must be checked on the robot; the offline suites emulate the bus and GPIO.
+# PCB sensor snapshot
+
+`get_pcb_snapshot()` returns a copied dictionary with `readings` (32 raw bytes,
+front then clockwise), `timestamp_s` (steady-clock seconds at read completion),
+`age_s` (seconds since that read), and `valid`. The values are captured together
+under the controller state mutex; obtaining a snapshot performs no I2C I/O.
+Before the first successful read, both times are `None` and `valid` is false.
+Stop or controller failure invalidates the snapshot while retaining the last
+readings and timestamp for diagnostics. Consumers must check both `valid` and
+`age_s` against their freshness requirement; validity alone does not imply a
+recent sample. The timestamp describes Pi read completion, not PCB ADC acquisition.
+
+Each entry script defines `USE_PCB = False`. Pass it as `use_pcb=USE_PCB` to
+`HardwareController.from_i2c_addresses`, `lidar.start_coordinates`, and
+`LineSensorFeed` (or `LocalisationSession`). `calibration_dashboard.py` passes
+its setting through `Dashboard` to the hardware worker. With it disabled there
+is no PCB polling, threshold loading, or floor-colour likelihood. The explicit
+Line sensors calibration page remains usable independently of game/localisation
+enablement. Changing a Python flag after building requires restarting that script,
+not recompilation. When enabled, the controller uses the PCB kicker and does not
+open the GPIO kicker.
+
+`lib.line_sensors.LineSensorFeed` loads `line_sensor_calibration.json` once at
+session startup. Both `main.py` (including paused/initial-pose loops) and dashboard
+localisation forward each fresh PCB sample through
+`lidar.set_line_readings(colours, timestamp_s)`. Python classifies all 32 readings
+as `"black"`, `"green"`, or `"white"`, preserving front-first clockwise order.
+Threshold endpoints belong to black/white; green is strictly between. Reversed
+threshold polarity is supported. Missing or invalid calibration disables this
+feed with a startup diagnostic; provisional defaults are never used.
+
+`lidar.get_line_readings()` returns `colours`, `timestamp_s`, `valid`,
+`applied_count`, and `last_applied_timestamp_s`. The last timestamp identifies the
+observation actually applied (Pi read-completion time), not merely received data.
+`clear_line_readings()` cancels pending data but preserves correction diagnostics;
+stop/start/reset clear both. Samples older than 0.5 seconds are invalid.
+
+Predict odometry before forwarding each snapshot. With PCB enabled, native updates
+apply independently between LIDAR scans and during fast rotation, after the first
+valid LIDAR pose. Current particle copies are rewound through retained odometry to
+the observation timestamp; only their weights change in the present. A sample
+newer than the latest prediction remains pending until prediction catches up;
+only the newest pending sample is retained. Invalid, duplicate, out-of-order,
+future-dated, stale, and out-of-history samples contribute no correction.
+
+Both enabled sensor updates multiply existing weights, normalize in log space,
+and resample below the existing 50% ESS threshold. PCB updates immediately publish
+position/yaw while retaining LIDAR confidence and validity. LIDAR updates do not
+score PCB samples again; recovery quality and correction counters remain specific
+to LIDAR. The disabled native LIDAR algorithm is unchanged.
+
+Startup still requires LIDAR initialization, scan data, and a valid LIDAR pose.
+After startup the game continues predicting and applying available PCB corrections
+during LIDAR loss without an outage timeout. After one second without raw scans,
+the terminal and screen retain the LIDAR fault, showing `ODOM+PCB` if a PCB
+observation applied within the last 0.5 seconds, otherwise `ODOM`. Raw scan progress
+clears the fault with the existing recovery indication. Dashboard driving still
+stops after 0.5 seconds of stale LIDAR, regardless of PCB corrections.
+
+The floor model follows `simulate.py`: the inward 50 mm white boundary at
+250 mm from the outer walls, 20 mm black goal-box lines, and three 10 mm-radius
+black spots. Goal hardware is excluded from floor paint. A 10 mm sampling grid
+softens edges; outlier probabilities and an overall four-observation weight
+limit soften the correlated ring's influence. Each independent ring log-score is
+also multiplied by `min(sample_interval / 0.1, 1)`, using 20 ms for the first
+applied observation, to limit delivery-rate dependence. Floor likelihood
+is excluded from the LIDAR recovery-quality metric. Geometry, sensor offsets,
+and likelihood strength still need validation on the real pitch.
+Restart localisation after changing saved thresholds. Rebuild both extensions
+with `.venv/bin/python lib/setup.py build_ext --inplace` on the Pi.

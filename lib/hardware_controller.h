@@ -3,6 +3,7 @@
 #include "PowerfulBLDCdriver.h"
 #include "imu/linux_bno08x.h"
 #include "linux_kicker.h"
+#include "pcb.h"
 #include "status_display.h"
 #include <array>
 #include <atomic>
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -38,6 +40,13 @@ struct HardwareHealth {
     int motor_address;
     uint64_t imu_recovery_generation;
 };
+struct PcbSnapshot {
+    std::array<uint8_t, 32> readings{};
+    // Read completion time in steady-clock seconds, absent before the first read.
+    std::optional<double> timestamp_s;
+    std::optional<double> age_s;
+    bool valid = false; // Caller must also check age_s for its freshness limit.
+};
 class MotorCommunicationError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
@@ -57,7 +66,7 @@ public:
                        double drive_motor_current_limit = 8.0,
                        double dribbler_motor_current_limit = 1.0,
                        double kick_pulse_length = 0.02, double kick_cooldown = 0.5,
-                       std::shared_ptr<StatusDisplay> display = nullptr);
+                       std::shared_ptr<StatusDisplay> display = nullptr, bool use_pcb = false);
     ~HardwareController();
     HardwareController(const HardwareController&) = delete;
     HardwareController& operator=(const HardwareController&) = delete;
@@ -70,6 +79,7 @@ public:
     uint64_t imu_update_count() const { return imu_->snapshot().update_count; }
     void set_startup_yaw(double raw_yaw) { imu_->set_startup_yaw(raw_yaw); }
     HardwareHealth health() const;
+    PcbSnapshot get_pcb_snapshot() const;
     std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);
     double get_dribbler_rpm();
     void stop();
@@ -81,6 +91,7 @@ private:
     void drive_loop() noexcept;
     void imu_loop() noexcept;
     void kicker_loop() noexcept;
+    void pcb_loop() noexcept;
     std::string disable_motors(); // Caller holds wire_->mutex; tries every write on every motor.
     void check_state() const; // Caller holds state_mutex_.
     void fail(const std::string& message, const std::string& source = "MOTOR", int address = -1);
@@ -92,6 +103,9 @@ private:
     std::vector<int> addresses_;
     std::unique_ptr<LinuxBno08x> imu_;
     std::unique_ptr<KickerOutput> kicker_;
+    std::unique_ptr<Pcb> pcb_;
+    bool use_pcb_;
+    PcbSnapshot pcb_snapshot_; // state_mutex_; getters return an owned copy
     std::vector<PowerfulBLDCdriver> motors_;
     int32_t drive_motor_current_limit_, dribbler_motor_current_limit_;
     int32_t constant_speed_current_limit_, acceleration_current_limit_; // state_mutex_
@@ -114,5 +128,6 @@ private:
     std::thread thread_;
     std::thread imu_thread_;
     std::thread kicker_thread_;
+    std::thread pcb_thread_;
 };
 } // namespace hardware

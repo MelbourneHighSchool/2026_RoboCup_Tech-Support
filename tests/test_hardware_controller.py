@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 from lib.hardware_controller import HardwareController
 
+USE_PCB = False
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,8 +50,7 @@ class HardwareControllerTests(unittest.TestCase):
                 return HardwareController.from_i2c_addresses(
                     addresses, 50, 100, 1000, 3,
                     calibration_file=str(path), i2c_device="/nonexistent/i2c-test",
-                    **kwargs,
-                )
+                    **kwargs, use_pcb=USE_PCB)
 
             with self.assertRaises(FileNotFoundError):
                 create([25, 26, 27, 28])
@@ -91,8 +92,9 @@ class HardwareControllerTests(unittest.TestCase):
         self.assertIn("dribbler:", HardwareController.move.__doc__)
         self.assertIn("kick: bool = False", HardwareController.move.__doc__)
         constructor_doc = HardwareController.from_i2c_addresses.__doc__
-        self.assertIn("drive_motor_current_limit: typing.SupportsFloat = 8.0", constructor_doc)
-        self.assertIn("kick_pulse_length: typing.SupportsFloat = 0.02", constructor_doc)
+        self.assertRegex(constructor_doc, r"drive_motor_current_limit: [^=]+ = 8\.0")
+        self.assertRegex(constructor_doc, r"kick_pulse_length: [^=]+ = 0\.02")
+        self.assertIn("use_pcb: bool = False", constructor_doc)
 
     def test_main_yaw_reference_and_lidar_prior(self):
         # Execute the actual startup helpers without importing main's hardware side effects.

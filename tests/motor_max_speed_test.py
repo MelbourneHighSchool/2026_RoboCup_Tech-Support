@@ -9,6 +9,8 @@ import time
 
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
+USE_PCB = False
+
 SETTLE_SECONDS = 0.5
 
 
@@ -21,7 +23,7 @@ def main(argv: list[str]) -> int:
     if args.start < 0 or args.step <= 0 or args.limit < args.start:
         parser.error("require 0 <= --start <= --limit and --step > 0")
 
-    hardware = create_hardware()
+    hardware = create_hardware(use_pcb=USE_PCB)
     maximum = 0.0
     try:
         set_startup_yaw(hardware)

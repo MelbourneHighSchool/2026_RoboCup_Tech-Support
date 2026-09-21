@@ -398,13 +398,13 @@ static std::uint64_t get_mcl_update_count() {
     return loc_get_last_scan_correction().sequence;
 }
 
-static void start_coordinates(float pitch_x, float pitch_y) {
+static void start_coordinates(float pitch_x, float pitch_y, bool use_pcb) {
     if (g_loc_running.load()) {
         throw std::runtime_error("Localization already running.");
     }
 
     loc_init_map(pitch_x, pitch_y);
-    loc_start();
+    loc_start(use_pcb);
 
     g_loc_running.store(true);
     g_loc_thread = std::thread(localization_thread_func);
@@ -481,14 +481,14 @@ static py::tuple get_recovery_status_py() {
 }
 
 // Offline / synthetic MCL helpers (no hardware required).
-static void test_mcl_start(float pitch_x, float pitch_y) {
+static void test_mcl_start(float pitch_x, float pitch_y, bool use_pcb) {
     if (g_loc_running.load()) {
         throw std::runtime_error(
             "Live localization thread is running; shut it down before test_mcl_start.");
     }
     loc_stop();
     loc_init_map(pitch_x, pitch_y);
-    loc_start();
+    loc_start(use_pcb);
 }
 
 static void test_mcl_stop() {
@@ -529,6 +529,20 @@ static void test_mcl_reset() {
 }
 
 PYBIND11_MODULE(lidar, m) {
+    m.def("set_line_readings", &loc_set_line_readings,
+          py::arg("colours"), py::arg("timestamp_s"),
+          "Store 32 classified PCB readings for optional floor-colour scoring");
+    m.def("clear_line_readings", &loc_clear_line_readings);
+    m.def("get_line_readings", []() {
+        const auto snapshot = loc_get_line_readings();
+        py::dict result;
+        result["colours"] = snapshot.colours;
+        result["timestamp_s"] = snapshot.timestamp_s;
+        result["valid"] = snapshot.valid;
+        result["applied_count"] = snapshot.applied_count;
+        result["last_applied_timestamp_s"] = snapshot.last_applied_timestamp_s;
+        return result;
+    });
     m.doc() = "RPLidar C1 Python module — scan data and MCL localization";
 
     m.def("init", &init_lidar,
@@ -569,7 +583,7 @@ PYBIND11_MODULE(lidar, m) {
           "Monotonic count of MCL scan updates applied.");
 
     m.def("start_coordinates", &start_coordinates,
-          py::arg("pitch_x"), py::arg("pitch_y"),
+          py::arg("pitch_x"), py::arg("pitch_y"), py::arg("use_pcb") = false,
           "Start background MCL localization thread.");
 
     m.def("clear_imu_yaw", &loc_clear_imu_yaw, "Remove the IMU prior without resetting localisation");
@@ -613,7 +627,7 @@ PYBIND11_MODULE(lidar, m) {
           "for MCL recovery diagnostics.");
 
     m.def("test_mcl_start", &test_mcl_start,
-          py::arg("pitch_x"), py::arg("pitch_y"),
+          py::arg("pitch_x"), py::arg("pitch_y"), py::arg("use_pcb") = false,
           "Start MCL without LIDAR hardware (for synthetic tests).");
     m.def("test_mcl_stop", &test_mcl_stop,
           "Stop synthetic MCL session.");

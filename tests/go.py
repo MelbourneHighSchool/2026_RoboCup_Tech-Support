@@ -6,6 +6,8 @@ from lib.hardware_controller import MotorCommunicationError
 from lib import lidar
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
+USE_PCB = False
+
 MAX_MOTOR_RPM = 400
 
 TEST_DIRECTION = 0
@@ -20,7 +22,7 @@ MOVE_POINT = (1000, 500)
 def main():
     hardware = None
     try:
-        hardware = create_hardware(max_motor_rpm=MAX_MOTOR_RPM)
+        hardware = create_hardware(max_motor_rpm=MAX_MOTOR_RPM, use_pcb=USE_PCB)
         startup_yaw = set_startup_yaw(hardware)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
         print(

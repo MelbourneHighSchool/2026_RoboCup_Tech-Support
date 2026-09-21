@@ -8,6 +8,8 @@ from lib.hardware_controller import MotorCommunicationError
 
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
+USE_PCB = False
+
 SQUARE_DIRECTIONS = (0, 90, 180, 270)
 DEFAULT_SIDE_SECONDS = 1.0
 DEFAULT_SPEED = 100  # mm/s
@@ -38,7 +40,7 @@ def main(argv: list[str]) -> int:
 
     hardware = None
     try:
-        hardware = create_hardware(max_motor_rpm=400)
+        hardware = create_hardware(max_motor_rpm=400, use_pcb=USE_PCB)
         set_startup_yaw(hardware)
         print("Running square path. Press Ctrl+C to stop.")
         for direction in SQUARE_DIRECTIONS:

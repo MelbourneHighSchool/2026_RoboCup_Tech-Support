@@ -15,6 +15,10 @@ struct Segment {
     float x2;
     float y2;
 };
+static LocLineReadings g_line_readings;
+static bool g_use_pcb = false;
+static double g_last_line_used_timestamp = 0;
+static void apply_pending_line_readings_locked(double now);
 
 struct Particle {
     float x;
@@ -394,14 +398,14 @@ struct ParticleSpread {
     float std_yaw_deg;
 };
 
-static ParticleSpread compute_particle_spread() {
+static ParticleSpread compute_particle_spread(const std::vector<Particle>& particles) {
     float sum_w = 0.0f;
     float mean_x = 0.0f;
     float mean_y = 0.0f;
     float sin_sum = 0.0f;
     float cos_sum = 0.0f;
 
-    for (const auto& particle : g_particles) {
+    for (const auto& particle : particles) {
         sum_w += particle.weight;
         mean_x += particle.weight * particle.x;
         mean_y += particle.weight * particle.y;
@@ -422,7 +426,7 @@ static ParticleSpread compute_particle_spread() {
     float var_x = 0.0f;
     float var_y = 0.0f;
     float var_yaw = 0.0f;
-    for (const auto& particle : g_particles) {
+    for (const auto& particle : particles) {
         float w = particle.weight / sum_w;
         float dx = particle.x - mean_x;
         float dy = particle.y - mean_y;
@@ -590,14 +594,15 @@ static void resample_particles() {
     g_particles.swap(new_particles);
 }
 
-static LocPose estimate_pose_from_particles(const Observation* obs, int n) {
+static LocPose estimate_pose_from_particles(const Observation* obs, int n,
+                                             const std::vector<Particle>& particles = g_particles) {
     float sum_w = 0.0f;
     float mean_x = 0.0f;
     float mean_y = 0.0f;
     float sin_sum = 0.0f;
     float cos_sum = 0.0f;
 
-    for (const auto& particle : g_particles) {
+    for (const auto& particle : particles) {
         sum_w += particle.weight;
         mean_x += particle.weight * particle.x;
         mean_y += particle.weight * particle.y;
@@ -622,7 +627,7 @@ static LocPose estimate_pose_from_particles(const Observation* obs, int n) {
     if (obs != nullptr && n > 0) {
         PoseStats stats = compute_stats(mean_x, mean_y, pose.yaw_deg,
                                         obs, n, g_pitch_x, g_pitch_y);
-        ParticleSpread spread = compute_particle_spread();
+        ParticleSpread spread = compute_particle_spread(particles);
         pose.confidence = compute_confidence(stats, spread);
         // Require strong evidence for the first global fix, but tolerate a
         // short confidence dip once tracking is established. Without this
@@ -777,8 +782,11 @@ void loc_set_imu_yaw(float yaw_deg) {
     g_imu_yaw_valid = true;
 }
 
-void loc_start() {
+void loc_start(bool use_pcb) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_use_pcb = use_pcb;
+    g_last_line_used_timestamp = 0;
+    g_line_readings = {};
     init_particles_uniform();
     g_odometry_history.clear();
     reset_recovery_state();
@@ -791,6 +799,9 @@ void loc_start() {
 
 void loc_stop() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_use_pcb = false;
+    g_last_line_used_timestamp = 0;
+    g_line_readings = {};
     g_started = false;
     g_ready = false;
     g_imu_yaw_valid = false;
@@ -804,6 +815,8 @@ void loc_stop() {
 
 void loc_reset() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_last_line_used_timestamp = 0;
+    g_line_readings = {};
     if (!g_started) {
         return;
     }
@@ -843,8 +856,16 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
     }
 
     const double end_time_s = monotonic_time_s();
+    // In PCB mode, consecutive history intervals must meet even if lock wait
+    // or scoring time changes between calls. Scale the recorded rates so the
+    // whole interval exactly reproduces the motion integrated with caller dt.
+    // Keep the legacy timestamp path untouched when PCB is disabled.
+    const double start_time_s = g_use_pcb && !g_odometry_history.empty()
+        ? g_odometry_history.back().end_time_s : end_time_s - dt_s;
+    const double history_scale = g_use_pcb ? dt_s / (end_time_s - start_time_s) : 1.0;
     g_odometry_history.push_back({
-        end_time_s - dt_s, end_time_s, vx_mm_s, vy_mm_s, omega_deg_s
+        start_time_s, end_time_s, float(vx_mm_s * history_scale),
+        float(vy_mm_s * history_scale), float(omega_deg_s * history_scale)
     });
     while (!g_odometry_history.empty()
            && g_odometry_history.front().end_time_s
@@ -858,6 +879,103 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
         g_pose.y = updated.y;
         g_pose.yaw_deg = updated.yaw_deg;
     }
+    apply_pending_line_readings_locked(end_time_s);
+}
+
+static float floor_segment_distance_sq(float x, float y, float ax, float ay, float bx, float by) {
+    const float dx = bx - ax, dy = by - ay;
+    const float t = std::max(0.0f, std::min(1.0f, ((x-ax)*dx + (y-ay)*dy) / (dx*dx + dy*dy)));
+    const float ex = x - ax - t*dx, ey = y - ay - t*dy;
+    return ex*ex + ey*ey;
+}
+
+static int floor_colour(float x, float y) {
+    // White rectangle is drawn inward from its outer edge, with 50 mm width.
+    if (x >= 250 && x <= g_pitch_x-250 && y >= 250 && y <= g_pitch_y-250 &&
+        (x <= 300 || x >= g_pitch_x-300 || y <= 300 || y >= g_pitch_y-300))
+        return 2;
+    for (float offset : {-300.0f, 0.0f, 300.0f}) {
+        const float dx = x-g_pitch_x/2, dy = y-g_pitch_y/2-offset;
+        if (dx*dx + dy*dy <= 100) return 0;
+    }
+    const float top = g_pitch_y/2-450, bottom = g_pitch_y/2+450;
+    for (float side : {x, g_pitch_x-x}) {
+        if (side < 290 || side > 620 || y < top-10 || y > bottom+20) continue;
+        if (floor_segment_distance_sq(side,y,300,top,610,top) <= 100 ||
+            floor_segment_distance_sq(side,y,600,top,600,bottom+10) <= 100 ||
+            floor_segment_distance_sq(side,y,600,bottom,300,bottom) <= 100) return 0;
+    }
+    return 1;
+}
+
+static Particle line_pose_at_time(Particle p, double from, double to) {
+    if (to >= from) {
+        for (const auto& step : g_odometry_history) {
+            const double dt = std::min(to, step.end_time_s) - std::max(from, step.start_time_s);
+            if (dt > 0) propagate_particle(p, step.vx_mm_s, step.vy_mm_s, step.omega_deg_s, dt, false);
+        }
+    } else {
+        for (auto it = g_odometry_history.rbegin(); it != g_odometry_history.rend(); ++it) {
+            const double dt = std::min(from, it->end_time_s) - std::max(to, it->start_time_s);
+            if (dt > 0) rewind_particle(p, *it, dt);
+        }
+    }
+    return p;
+}
+
+static float score_floor_colours(const Particle& p, const LocLineReadings& sample) {
+    float score = 0;
+    for (size_t i = 0; i < sample.colours.size(); ++i) {
+        const float angle = (p.yaw_deg + i*11.25f) * (3.14159265358979323846f / 180.0f);
+        const float x = p.x + 75*std::cos(angle), y = p.y + 75*std::sin(angle);
+        const int observed = sample.colours[i] == "black" ? 0 : sample.colours[i] == "white" ? 2 : 1;
+        int matches = 0;
+        // A 10 mm footprint softens paint edges and small placement errors.
+        for (float dx : {-10.0f, 0.0f, 10.0f})
+            for (float dy : {-10.0f, 0.0f, 10.0f})
+                matches += floor_colour(x+dx,y+dy) == observed;
+        score += std::log(0.05f + 0.85f * matches/9.0f);
+    }
+    // Nearby sensors are correlated: cap the entire ring at four observations.
+    return score * (4.0f / 32.0f);
+}
+
+static void apply_pending_line_readings_locked(double now) {
+    if (!g_use_pcb || !g_started || !g_ready || g_particles.empty() ||
+        !g_line_readings.valid || g_line_readings.timestamp_s <= g_last_line_used_timestamp)
+        return;
+    const double timestamp = g_line_readings.timestamp_s;
+    if (timestamp > now || now - timestamp > 0.5 ||
+        g_odometry_history.empty() || timestamp < g_odometry_history.front().start_time_s) {
+        g_line_readings.valid = false;
+        return;
+    }
+    const double present = g_odometry_history.back().end_time_s;
+    if (timestamp > present) return;  // Keep newest sample until prediction catches up.
+    const double interval = g_last_line_used_timestamp > 0
+        ? timestamp - g_last_line_used_timestamp : 0.02;
+    const float strength = std::min(interval / 0.1, 1.0);
+    float max_log = -INFINITY;
+    for (auto& particle : g_particles) {
+        const Particle observed = line_pose_at_time(particle, present, timestamp);
+        particle.weight = std::log(std::max(particle.weight, 1e-30f)) +
+            strength * score_floor_colours(observed, g_line_readings);
+        max_log = std::max(max_log, particle.weight);
+    }
+    float sum = 0;
+    for (auto& particle : g_particles) {
+        particle.weight = std::exp(particle.weight - max_log);
+        sum += particle.weight;
+    }
+    for (auto& particle : g_particles) particle.weight /= sum;
+    // Publish the weighted estimate before resampling introduces sampling noise.
+    // No observations here: retain LIDAR's confidence and validity unchanged.
+    g_pose = estimate_pose_from_particles(nullptr, 0);
+    if (effective_sample_size() < ESS_RESAMPLE_FRACTION * PARTICLE_COUNT)
+        resample_particles();
+    g_last_line_used_timestamp = timestamp;
+    ++g_line_readings.applied_count;
+    g_line_readings.last_applied_timestamp_s = timestamp;
 }
 
 void loc_update_scan(const LocScanPoint* points, int count,
@@ -905,7 +1023,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
     const bool compensate_delay =
         scan_time_s > 0.0 && !g_odometry_history.empty();
 
-    if (compensate_delay) {
+    if (compensate_delay && !g_use_pcb) {
         for (auto step_it = g_odometry_history.rbegin();
              step_it != g_odometry_history.rend(); ++step_it) {
             if (step_it->end_time_s <= scan_time_s) {
@@ -938,14 +1056,22 @@ void loc_update_scan(const LocScanPoint* points, int count,
     // Store log-weights first, then log-sum-exp so relative weights stay
     // usable even when absolute log-likelihoods underflow float exp().
     float max_log = -1e30f;
+    float max_lidar_log = -1e30f;
+    const double present = g_odometry_history.empty() ? monotonic_time_s()
+        : g_odometry_history.back().end_time_s;
     for (auto& particle : g_particles) {
-        float log_lik = score_pose(particle.x, particle.y, particle.yaw_deg,
+        const Particle observed = g_use_pcb && compensate_delay
+            ? line_pose_at_time(particle, present, scan_time_s) : particle;
+        float log_lik = score_pose(observed.x, observed.y, observed.yaw_deg,
                                    obs.data(), n, g_pitch_x, g_pitch_y, max_range_mm);
         if (g_imu_yaw_valid) {
-            float yaw_err = wrap_angle_deg(particle.yaw_deg - g_imu_yaw_deg);
+            float yaw_err = wrap_angle_deg(observed.yaw_deg - g_imu_yaw_deg);
             float e = yaw_err / YAW_PRIOR_SIGMA_DEG;
             log_lik += -0.5f * e * e;
         }
+        // Preserve the existing LIDAR/IMU recovery metric, excluding floor evidence.
+        max_lidar_log = std::max(max_lidar_log, log_lik);
+        if (g_use_pcb) log_lik += std::log(std::max(particle.weight, 1e-30f));
         particle.weight = log_lik;
         if (log_lik > max_log) {
             max_log = log_lik;
@@ -957,7 +1083,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
         observation_weight_sum += observation.weight;
     }
     const float scan_quality =
-        max_log / std::max(observation_weight_sum, 1e-6f);
+        max_lidar_log / std::max(observation_weight_sum, 1e-6f);
     update_recovery_state(scan_quality);
 
     float weight_sum = 0.0f;
@@ -970,7 +1096,14 @@ void loc_update_scan(const LocScanPoint* points, int count,
         particle.weight /= weight_sum;
     }
 
-    LocPose scan_pose = estimate_pose_from_particles(obs.data(), n);
+    std::vector<Particle> scan_particles;
+    if (g_use_pcb && compensate_delay) {
+        scan_particles.reserve(g_particles.size());
+        for (const auto& particle : g_particles)
+            scan_particles.push_back(line_pose_at_time(particle, present, scan_time_s));
+    }
+    LocPose scan_pose = estimate_pose_from_particles(obs.data(), n,
+        scan_particles.empty() ? g_particles : scan_particles);
     if (scan_pose.ok) {
         g_ready = true;
     }
@@ -982,7 +1115,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
 
     // Bring the scan-corrected particles back to the present without adding
     // process noise a second time.
-    if (compensate_delay) {
+    if (compensate_delay && !g_use_pcb) {
         for (const auto& step : g_odometry_history) {
             if (step.end_time_s <= scan_time_s) {
                 continue;
@@ -1015,6 +1148,37 @@ void loc_update_scan(const LocScanPoint* points, int count,
             wrap_angle_deg(g_pose.yaw_deg - predicted_pose.yaw_deg);
         g_last_scan_correction.valid = true;
     }
+}
+
+void loc_set_line_readings(const std::vector<std::string>& colours, double timestamp_s) {
+    if (colours.size() != 32 || !std::isfinite(timestamp_s) || timestamp_s <= 0)
+        throw std::invalid_argument("Expected 32 colours and a positive finite timestamp");
+    for (const auto& colour : colours)
+        if (colour != "black" && colour != "green" && colour != "white")
+            throw std::invalid_argument("Line colour must be black, green, or white");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    const double now = monotonic_time_s();
+    if (timestamp_s > now || now - timestamp_s > 0.5 ||
+        timestamp_s <= g_line_readings.timestamp_s ||
+        (g_use_pcb && !g_odometry_history.empty() &&
+         timestamp_s < g_odometry_history.front().start_time_s)) return;
+    std::copy(colours.begin(), colours.end(), g_line_readings.colours.begin());
+    g_line_readings.timestamp_s = timestamp_s;
+    g_line_readings.valid = true;
+    apply_pending_line_readings_locked(now);
+}
+
+void loc_clear_line_readings() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_line_readings.valid = false;
+}
+
+LocLineReadings loc_get_line_readings() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    auto result = g_line_readings;
+    const double age = monotonic_time_s() - result.timestamp_s;
+    result.valid = result.valid && age >= 0 && age <= 0.5;
+    return result;
 }
 
 bool loc_scan_updates_allowed() {

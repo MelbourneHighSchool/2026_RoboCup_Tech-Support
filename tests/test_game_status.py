@@ -5,10 +5,13 @@ import math
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
 from lib.game_status import GameStatus, ImuPause, ProgressHealth
+
+USE_PCB = False
 
 
 class Display:
@@ -31,7 +34,7 @@ class GameStatusTests(unittest.TestCase):
         self.display = Display()
         lidar = SimpleNamespace(get_scan_generation=lambda: self.scans,
                                 clear_imu_yaw=self.clear_prior)
-        self.status = GameStatus(self.display, lidar, "STRIKER", clock=lambda: self.now)
+        self.status = GameStatus(self.display, lidar, "STRIKER", clock=lambda: self.now, use_pcb=USE_PCB)
         self.camera = SimpleNamespace(capture_count=0, infer_count=0, inference_error=None,
                                       recording_info={})
         self.health = {"imu_recovery_generation": 0, "imu_healthy": True,
@@ -64,6 +67,37 @@ class GameStatusTests(unittest.TestCase):
         self.fresh()
         self.assertTrue(self.status.poll())
         self.assertEqual(self.display.components["LIDAR"], ("+", ""))
+
+    def test_pcb_fallback_requires_applied_corrections_and_keeps_lidar_fault(self):
+        self.status.use_pcb = True
+        lines = {"applied_count": 0, "last_applied_timestamp_s": 0.0, "valid": True}
+        self.status.lidar.get_line_readings = lambda: lines
+        self.status.update("STRIKER", True)
+        self.fresh()
+        self.status.poll()
+        self.now = 2
+        with unittest.mock.patch("builtins.print") as output:
+            self.status.poll()
+            self.assertEqual(self.display.components["LIDAR"], ("!", "DISCONNECTED - ODOM"))
+            lines.update(applied_count=1, last_applied_timestamp_s=1.9)
+            self.status.poll()
+            self.assertEqual(self.display.components["LIDAR"], ("!", "DISCONNECTED - ODOM+PCB"))
+            self.assertEqual(self.display.state[2], "RUNNING")
+            # Available but unapplied data cannot keep PCB fallback alive.
+            self.now = 2.5
+            self.status.poll()
+            self.assertEqual(self.display.components["LIDAR"][1], "DISCONNECTED - ODOM")
+            self.now = 100
+            lines.update(applied_count=100, last_applied_timestamp_s=100)
+            self.status.poll()
+            self.assertEqual(self.display.state[2], "RUNNING")
+            self.assertEqual(self.display.components["LIDAR"][0], "!")
+            self.fresh()
+            self.status.poll()
+            self.assertEqual(self.display.components["LIDAR"], ("+", ""))
+            messages = [call.args[0] for call in output.call_args_list]
+            self.assertIn("LIDAR: DISCONNECTED - ODOM+PCB", messages)
+            self.assertIn("LIDAR: recovered", messages)
 
     def test_capture_alive_inference_dead(self):
         self.fresh()

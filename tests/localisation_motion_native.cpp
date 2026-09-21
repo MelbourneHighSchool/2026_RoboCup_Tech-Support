@@ -5,6 +5,8 @@
 #include <cassert>
 #include <limits>
 
+constexpr bool USE_PCB = false;
+
 static double measured_variance(float speed, int steps) {
     g_rng.seed(123);
     double sum = 0.0, sum_sq = 0.0;
@@ -25,7 +27,7 @@ static double measured_variance(float speed, int steps) {
 }
 
 int main() {
-    loc_start();
+    loc_start(USE_PCB);
     loc_set_imu_yaw(90);
     assert(g_imu_yaw_valid);
     const auto before_clear = g_particles;

@@ -20,6 +20,7 @@ from calibration.dashboard import (
     Lease,
     discover_models,
     encode,
+    line_thresholds,
     number,
     pixel_values,
     scene,
@@ -35,6 +36,8 @@ from lib.localisation_service import (
 )
 from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
 
+USE_PCB = False
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -43,6 +46,7 @@ class FakeHardware:
         self.calls = []
         self.mode = "idle"
         self.stops = 0
+        self.pcb_stops = 0
 
     def submit(self, action, data, cancel):
         self.calls.append((action, data, cancel))
@@ -57,6 +61,9 @@ class FakeHardware:
     def request_stop_localisation(self):
         self.calls.append(("stop_localise", {}, None))
         self.mode = "idle"
+
+    def request_stop_pcb(self):
+        self.pcb_stops += 1
 
     def close(self):
         pass
@@ -87,6 +94,73 @@ def wait_until(predicate):
         if time.monotonic() > deadline:
             raise AssertionError("Worker did not reach expected state")
         time.sleep(0.01)
+
+
+def test_line_thresholds_save_reload_and_backup(dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    with pytest.raises(PermissionError):
+        dashboard.command("save_line_thresholds", {"black": 10, "white": 200}, None)
+    dashboard.command("save_line_thresholds", {"black": 20, "white": 210}, token)
+    # Reversed polarity is supported; green remains between thresholds.
+    dashboard.command("save_line_thresholds", {"black": 220, "white": 30}, token)
+    path = dashboard.root / "line_sensor_calibration.json"
+    assert json.loads(path.read_text()) == {"black": 220, "white": 30,
+                                            "sensor_radius_mm": 75, "sensor_count": 32}
+    assert list((dashboard.root / "calibration_backups").glob("line_sensor_calibration-*.json"))
+    restored = Dashboard(dashboard.root, hardware_factory=FakeHardware, start=False)
+    try:
+        assert restored.state()["line_thresholds"] == {"black": 220, "white": 30}
+    finally:
+        restored.close()
+    for value in ({"black": -1, "white": 200}, {"black": 10, "white": 256},
+                  {"black": 20, "white": 20}, {"black": 1.5, "white": 200},
+                  {"black": True, "white": 200}, {"black": "nan", "white": 200}):
+        with pytest.raises((ValueError, TypeError)):
+            line_thresholds(value)
+
+
+def test_pcb_start_stop_does_not_require_arming(dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    dashboard.command("pcb_start", {}, token)
+    assert dashboard.hardware.calls[-1][0] == "pcb_start"
+    assert not dashboard.lease.armed
+    dashboard.command("pcb_stop", {}, token)
+    assert dashboard.hardware.pcb_stops == 1
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_pcb_monitor_reads_without_motor_setup_and_invalidates(tmp_path, monkeypatch, fail):
+    calls = []
+
+    class Reader:
+        def read_sensors(self):
+            calls.append(time.monotonic())
+            if fail and len(calls) > 1:
+                raise OSError("PCB disconnected")
+            return list(range(32))
+
+    monkeypatch.setitem(sys.modules, "lib.hardware_controller", types.SimpleNamespace(PcbSensorReader=Reader))
+    hardware = Hardware(tmp_path, lambda *_a, **_kw: None)
+    try:
+        hardware.submit("pcb_start", {}, threading.Event())
+        wait_until(lambda: hardware.snapshot().get("pcb", {}).get("valid"))
+        sample = hardware.snapshot()["pcb"]
+        assert sample["readings"] == list(range(32))
+        assert sample["age_s"] >= 0
+        sample["readings"][0] = 255
+        assert hardware.snapshot()["pcb"]["readings"][0] == 0
+        assert hardware.controller is None and hardware.session is None
+        with pytest.raises(ValueError, match="already running"):
+            hardware.submit("manual_start", {}, threading.Event())
+        if fail:
+            wait_until(lambda: hardware.snapshot()["mode"] == "stopped")
+            assert "PCB disconnected" in hardware.snapshot()["error"]
+        else:
+            hardware.request_stop_pcb()
+            wait_until(lambda: hardware.snapshot()["mode"] == "idle")
+        assert not hardware.snapshot()["pcb"]["valid"]
+    finally:
+        hardware.close()
 
 
 def test_lease_expiry_invalidates_old_arm_and_token():
@@ -457,7 +531,7 @@ def test_localisation_uses_native_relative_yaw_directly():
 def test_localisation_predicts_without_fix_and_flags_stale_data():
     lidar, imu = FakeLidar(), FakeIMU()
     now = [time.monotonic()]
-    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), clock=lambda: now[0])
+    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), clock=lambda: now[0], use_pcb=USE_PCB)
     lidar.ok = False
     assert not session.tick()["pose"][4]
     assert len(lidar.predictions) == 1 and lidar.predictions[0][:2] == (0, 0)
@@ -465,6 +539,30 @@ def test_localisation_predicts_without_fix_and_flags_stale_data():
     assert session.tick()["fresh"]
     now[0] += .6
     assert not session.tick()["fresh"]
+
+
+def test_pcb_follows_measured_prediction_but_does_not_renew_lidar_freshness():
+    lidar, imu = FakeLidar(), FakeIMU()
+    now = [time.monotonic()]
+    corrections = []
+    imu.get_measured_body_velocity_mm_s = lambda yaw: (123, -45)
+    imu.get_gyro_z_deg_s = lambda: 100
+
+    class Feed:
+        def update(self, lidar_module, hardware):
+            assert hardware is imu
+            assert lidar_module.predictions[-1][:3] == (123, -45, 100)
+            corrections.append(len(lidar_module.predictions))
+
+    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(),
+                                  clock=lambda: now[0], line_feed=Feed(), use_pcb=True)
+    assert session.tick()["fresh"]
+    now[0] += 0.51
+    imu.imu_update_count += 1
+    state = session.tick()
+    assert corrections == [1, 2]
+    assert not state["fresh"]  # Dashboard driving still stops after .5 s without LIDAR.
+    assert state["mcl_age_s"] >= 0.5
 
 
 @pytest.fixture
@@ -475,7 +573,7 @@ def rotation_session():
     lidar.get_mcl_update_count = lambda: lidar.mcl_updates
     lidar.scan_updates_enabled = lambda: lidar.scans_enabled
     now = [time.monotonic()]
-    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), clock=lambda: now[0])
+    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), clock=lambda: now[0], use_pcb=USE_PCB)
 
     def tick(dt=0, *, scan=True, imu_report=True):
         now[0] += dt
@@ -558,7 +656,7 @@ def test_drive_abort_and_repeated_sessions(tmp_path):
     hardware = Hardware(tmp_path, lambda text, **_kwargs: logs.append(text))
     try:
         lidar, imu = FakeLidar(), FakeIMU()
-        hardware.session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator())
+        hardware.session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), use_pcb=USE_PCB)
         hardware.pause = types.SimpleNamespace(read=lambda: False, switch=types.SimpleNamespace(deinit=lambda: None))
         for _ in range(2):
             controller = imu
@@ -575,7 +673,7 @@ def test_drive_abort_and_repeated_sessions(tmp_path):
             assert hardware.target is None
             if hardware.session is None:
                 imu = FakeIMU()
-                hardware.session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator())
+                hardware.session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), use_pcb=USE_PCB)
     finally:
         hardware.close()
 
@@ -629,7 +727,7 @@ def test_hardware_aborts_on_pose_pause_or_staleness(cause, tmp_path):
     hardware = Hardware(tmp_path, lambda *_args, **_kwargs: None)
     try:
         lidar, imu = FakeLidar(), FakeIMU()
-        session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator())
+        session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), use_pcb=USE_PCB)
         session.tick()
         if cause == "pose":
             lidar.ok = False
@@ -667,7 +765,7 @@ def test_repeated_drive_reuses_localisation_controller(monkeypatch, tmp_path):
     hardware.closing.set()
     hardware.thread.join(1)
     try:
-        session = LocalisationSession(FakeLidar(), FakeIMU(), 10, LidarVelocityEstimator())
+        session = LocalisationSession(FakeLidar(), FakeIMU(), 10, LidarVelocityEstimator(), use_pcb=USE_PCB)
         session.tick()
         hardware.session = session
         controllers = []

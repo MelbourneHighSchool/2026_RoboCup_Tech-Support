@@ -15,6 +15,7 @@ from calibration.dashboard import Dashboard, encode, pixel_values
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "calibration" / "dashboard_static"
+USE_PCB = False
 
 
 def json_safe(value):
@@ -180,7 +181,8 @@ def main():
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         parser.exit(1, "A calibration dashboard is already running.\n")
-    dashboard = Dashboard(ROOT, fps=args.preview_fps, lidar_port=args.lidar_port, lidar_baud=args.lidar_baud)
+    dashboard = Dashboard(ROOT, fps=args.preview_fps, lidar_port=args.lidar_port, lidar_baud=args.lidar_baud,
+                          use_pcb=USE_PCB)
     server = None
     try:
         server = DashboardServer((args.host, args.port), dashboard)

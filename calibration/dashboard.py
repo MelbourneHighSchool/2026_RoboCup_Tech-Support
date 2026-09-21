@@ -23,7 +23,10 @@ from calibration.ball_distance import (
 )
 from calibration.dashboard_hardware import PITCH, Hardware
 from lib.config import load_camera_bearing_offset
+from lib.line_sensors import line_thresholds
 from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
+
+USE_PCB = False
 
 
 def discover_models(root):
@@ -185,7 +188,7 @@ def scene(frame, ball, bots, calibration, bot_calibration=None):
 
 class Dashboard:
     def __init__(self, root, *, fps=15, camera_factory=None, hardware_factory=Hardware, start=True,
-                 lidar_port="/dev/ttyUSB0", lidar_baud=460800):
+                 lidar_port="/dev/ttyUSB0", lidar_baud=460800, use_pcb=USE_PCB):
         self.root = Path(root)
         self.fps = fps
         self.lock = threading.RLock()
@@ -209,6 +212,14 @@ class Dashboard:
         self.events = deque(maxlen=300)
         self.history = deque(maxlen=300)
         self.thresholds = load_thresholds(self.root / "goal_thresholds.json")
+        self.line_thresholds = {"black": 64, "white": 192}
+        try:
+            self.line_thresholds = line_thresholds(json.loads(
+                (self.root / "line_sensor_calibration.json").read_text()))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError) as exc:
+            self.notify(f"Line sensor calibration: {exc}; using provisional thresholds", error=True)
         self.samples = []
         self.sample_resolution = None
         self.fit = None
@@ -227,7 +238,8 @@ class Dashboard:
                     self.default_addresses = addresses([int(v) for v in value.split("#")[0].split(",")])
         except (OSError, ValueError) as exc:
             self.notify(f"Motor configuration: {exc}", error=True)
-        self.hardware = hardware_factory(self.root, self.notify, port=lidar_port, baud=lidar_baud)
+        self.hardware = hardware_factory(self.root, self.notify, port=lidar_port, baud=lidar_baud,
+                                         use_pcb=use_pcb)
         self.threads = []
         if start:
             for name, target in (("preview", self._camera_loop), ("actions", self._jobs), ("watchdog", self._watchdog)):
@@ -285,6 +297,7 @@ class Dashboard:
                            "requested_model": self.requested_model},
                 "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
                 "hardware": self.hardware.snapshot(), "thresholds": copy.deepcopy(self.thresholds),
+                "line_thresholds": dict(self.line_thresholds),
                 "bot_samples": list(self.bot_samples), "bot_fit": self.bot_fit,
                 "samples": list(self.samples), "fit": self.fit, "addresses": self.default_addresses,
                 "events": list(self.events)[-20:], "pitch": PITCH,
@@ -296,11 +309,27 @@ class Dashboard:
                 return {"token": self.lease.claim()}
             if action == "stop":
                 self.lease.stop()
+                self.hardware.request_stop_pcb()
                 self.notify("Stop requested; disarmed")
                 return {}
             self.lease.check(token)
             if action == "heartbeat":
                 self.lease.heartbeat(token)
+                return {}
+            if action == "pcb_stop":
+                self.hardware.request_stop_pcb()
+                return {}
+            if action == "pcb_start":
+                # Reserve hardware immediately so a following stop cannot be
+                # overtaken by a start still waiting in the dashboard queue.
+                self.hardware.submit(action, {}, threading.Event())
+                return {"queued": True}
+            if action == "save_line_thresholds":
+                thresholds = line_thresholds(data)
+                save_json(self.root / "line_sensor_calibration.json",
+                          {**thresholds, "sensor_radius_mm": 75, "sensor_count": 32})
+                self.line_thresholds = thresholds
+                self.notify("Line sensor thresholds saved")
                 return {}
             if action == "release":
                 self.lease.stop()

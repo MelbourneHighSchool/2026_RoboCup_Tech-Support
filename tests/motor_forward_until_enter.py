@@ -7,6 +7,8 @@ import sys
 
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
+USE_PCB = False
+
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Drive forward until Enter is pressed.")
@@ -17,7 +19,7 @@ def main(argv: list[str]) -> int:
     if args.speed < 0:
         parser.error("--speed must be non-negative")
 
-    hardware = create_hardware()
+    hardware = create_hardware(use_pcb=USE_PCB)
     try:
         set_startup_yaw(hardware)
         print(f"Commanding forward speed: {args.speed:g} mm/s")

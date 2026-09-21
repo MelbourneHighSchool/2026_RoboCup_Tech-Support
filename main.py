@@ -20,7 +20,10 @@ from lib.camera import Camera
 from lib.communication import Peer
 from lib.config import BotMode, load_config
 from lib.game_status import GameStatus, ImuPause
+from lib.line_sensors import LineSensorFeed
 from lib.recording_session import RecordingSession
+
+USE_PCB = False
 
 LOG_FPS = 30 # How often the bot state is written to the log file
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
@@ -313,7 +316,7 @@ try:
         display = StatusDisplay()
     except Exception as exc:
         print(f"Warning: display unavailable: {exc}")
-    status = GameStatus(display, lidar, bot_mode.name)
+    status = GameStatus(display, lidar, bot_mode.name, use_pcb=USE_PCB)
     status.start()
     if _log_error is not None:
         status.report("LOG", _log_error)
@@ -350,6 +353,7 @@ try:
         YAW_CORRECT_THRESHOLD,
         kicker_pin=int(KICKER_PIN.id),
         display=display,
+        use_pcb=USE_PCB,
     )
     status.attach_hardware(hardware_controller)
     hardware_controller.set_drive_current_limits(CONSTANT_SPEED_TORQUE, ACCELERATION_TORQUE)
@@ -359,7 +363,10 @@ try:
     print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
     feed_imu_yaw_prior(hardware_controller)
 
-    lidar.start_coordinates(2430, 1820)
+    lidar.start_coordinates(2430, 1820, use_pcb=USE_PCB)
+    line_sensor_feed = LineSensorFeed(use_pcb=USE_PCB)
+    if line_sensor_feed.error:
+        print(line_sensor_feed.error)
 
     startup_stage = "LIDAR"
     status.update(bot_mode.name, False, "STARTING", "FIRST POSE")
@@ -372,7 +379,9 @@ try:
         feed_imu_yaw_prior(hardware_controller)
         now = time.monotonic()
         omega = hardware_controller.get_gyro_z_deg_s()
-        lidar.predict_odometry(0, 0, omega if omega is not None else 0.0, now - last_wait_time)
+        vx, vy = hardware_controller.get_measured_body_velocity_mm_s(hardware_controller.get_yaw() or 0.0)
+        lidar.predict_odometry(vx, vy, omega if omega is not None else 0.0, now - last_wait_time)
+        line_sensor_feed.update(lidar, hardware_controller)
         last_wait_time = now
         time.sleep(0.1)
 
@@ -489,7 +498,6 @@ try:
         if USE_PAUSE:
             if SWITCHM == 1 and pause_was_pressed and not pause_pressed:
                 requested_run = not requested_run
-                last_pose_time = time.monotonic()
             elif SWITCHM == 2:
                 requested_run = pause_pressed
         pause_was_pressed = pause_pressed
@@ -524,24 +532,25 @@ try:
                         feed_imu_yaw_prior(hardware_controller)
                 last_paused_imu_count = count
                 next_paused_yaw_sample_time = now + STARTUP_YAW_SAMPLE_INTERVAL
+        now_pose = time.monotonic()
+        dt_pose = now_pose - last_pose_time
+        last_pose_time = now_pose
+        gyro_z = hardware_controller.get_gyro_z_deg_s()
+        omega = gyro_z if gyro_z is not None else 0.0
+        yaw = hardware_controller.get_yaw()
+        feed_imu_yaw_prior(hardware_controller)
+        vx, vy = 0.0, 0.0
+        if hardware_controller is not None:
+            yaw_for_odom = yaw if yaw is not None else 0.0
+            # Fused-pose speed agreement is diagnostic, not a velocity scale.
+            vx, vy = hardware_controller.get_measured_body_velocity_mm_s(
+                yaw_for_odom
+            )
+        lidar.predict_odometry(vx, vy, omega, dt_pose)
+        line_sensor_feed.update(lidar, hardware_controller)
+
         if run:
             _logic_loop_count += 1
-
-            now_pose = time.monotonic()
-            dt_pose = now_pose - last_pose_time
-            last_pose_time = now_pose
-            gyro_z = hardware_controller.get_gyro_z_deg_s()
-            omega = gyro_z if gyro_z is not None else 0.0
-            yaw = hardware_controller.get_yaw()
-            feed_imu_yaw_prior(hardware_controller)
-            vx, vy = 0.0, 0.0
-            if hardware_controller is not None:
-                yaw_for_odom = yaw if yaw is not None else 0.0
-                # Fused-pose speed agreement is diagnostic, not a velocity scale.
-                vx, vy = hardware_controller.get_measured_body_velocity_mm_s(
-                    yaw_for_odom
-                )
-            lidar.predict_odometry(vx, vy, omega, dt_pose)
 
             x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
             if x_pos is None or y_pos is None or yaw is None:
@@ -735,7 +744,6 @@ try:
                 print(exc)
                 raise
         else:
-            last_pose_time = time.monotonic()
             time.sleep(0.01)
             if hardware_controller is not None:
                 hardware_controller.move(0, 0, 0, 0, 0)

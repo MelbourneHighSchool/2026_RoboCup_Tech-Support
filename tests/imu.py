@@ -2,7 +2,9 @@ import time
 
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
-hardware = create_hardware()
+USE_PCB = False
+
+hardware = create_hardware(use_pcb=USE_PCB)
 
 try:
     startup = set_startup_yaw(hardware)

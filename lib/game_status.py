@@ -3,6 +3,8 @@
 import threading
 import time
 
+USE_PCB = False
+
 
 class ProgressHealth:
     """Track progress, allowing a one-second startup interval before reporting loss."""
@@ -46,7 +48,8 @@ class ImuPause:
 class GameStatus:
     """One lightweight monitor runs during startup waits and paused operation too."""
 
-    def __init__(self, display, lidar, mode, clock=time.monotonic):
+    def __init__(self, display, lidar, mode, clock=time.monotonic, *, use_pcb=USE_PCB):
+        self.use_pcb = use_pcb
         self.display = display
         self.lidar = lidar
         self.clock = clock
@@ -107,7 +110,13 @@ class GameStatus:
         with self._lock:
             now = self.clock()
             lidar_health = self._progress("lidar", self.lidar.get_scan_generation(), now)
-            self.report("LIDAR", "DISCONNECTED - ODOM" if lidar_health == "!" else "")
+            fallback = "ODOM"
+            if lidar_health == "!" and self.use_pcb:
+                lines = self.lidar.get_line_readings()
+                if (lines["applied_count"] > 0 and
+                        0 <= now - lines["last_applied_timestamp_s"] <= 0.5):
+                    fallback = "ODOM+PCB"
+            self.report("LIDAR", f"DISCONNECTED - {fallback}" if lidar_health == "!" else "")
             if self.display is not None:
                 self.display.component("LIDAR", lidar_health, self._errors.get("LIDAR", ""))
             if self.camera is not None:

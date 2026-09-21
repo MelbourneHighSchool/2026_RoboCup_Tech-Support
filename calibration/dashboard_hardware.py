@@ -8,6 +8,8 @@ import threading
 import time
 from collections import deque
 
+USE_PCB = False
+
 PITCH = (2430, 1820)
 
 
@@ -28,7 +30,8 @@ def target_command(pose, target, speed, target_yaw=None):
 
 
 class Hardware:
-    def __init__(self, root, notify, *, port="/dev/ttyUSB0", baud=460800):
+    def __init__(self, root, notify, *, port="/dev/ttyUSB0", baud=460800, use_pcb=USE_PCB):
+        self.use_pcb = use_pcb
         self.root = root
         self.notify = notify
         self.port = port
@@ -41,6 +44,7 @@ class Hardware:
         self.last_kick = float("-inf")
         self.active_cancel = threading.Event()
         self.localisation_stop_requested = threading.Event()
+        self.pcb_stop = threading.Event()
         self.target = None
         self.target_yaw = None
         self.speed = 500
@@ -56,14 +60,45 @@ class Hardware:
 
     def submit(self, action, data, cancel):
         with self.lock:
+            if action == "pcb_start" and self.session is not None:
+                raise ValueError("Stop localisation before monitoring line sensors")
             if self.status["mode"] not in ("idle", "stopped", "monitoring"):
                 raise ValueError("Hardware operation already running")
+            if action == "pcb_start":
+                self.pcb_stop.clear()
             self.jobs.put_nowait((action, data, cancel))
             self.status["mode"] = "queued " + action
 
     def snapshot(self):
         with self.lock:
-            return copy.deepcopy({**self.status, "target": self.target, "trajectory": list(self.trail)})
+            result = copy.deepcopy({**self.status, "target": self.target, "trajectory": list(self.trail)})
+            pcb = result.get("pcb")
+            if pcb and pcb["timestamp_s"] is not None:
+                pcb["age_s"] = max(0, time.monotonic() - pcb["timestamp_s"])
+            return result
+
+    def request_stop_pcb(self):
+        self.pcb_stop.set()
+
+    def _monitor_pcb(self, cancel):
+        from lib.hardware_controller import PcbSensorReader
+
+        with self.lock:
+            self.status.update(mode="pcb", pcb={"readings": [], "valid": False,
+                                               "timestamp_s": None, "age_s": None})
+        reader = PcbSensorReader()
+        try:
+            while not (self.closing.is_set() or self.pcb_stop.is_set() or cancel.is_set()):
+                readings = reader.read_sensors()
+                timestamp = time.monotonic()
+                with self.lock:
+                    self.status["pcb"] = {"readings": readings, "timestamp_s": timestamp,
+                                          "age_s": 0, "valid": True}
+                self.pcb_stop.wait(0.02)
+        finally:
+            with self.lock:
+                self.status["pcb"]["valid"] = False
+            del reader
 
     def stop_drive(self):
         with self.lock:
@@ -96,6 +131,7 @@ class Hardware:
 
         from lib import lidar
         from lib.config import load_config
+        from lib.line_sensors import LineSensorFeed
         from lib.localisation_service import (
             LidarVelocityEstimator,
             LocalisationSession,
@@ -114,11 +150,16 @@ class Hardware:
                 400,
                 3,
                 calibration_file=str(self.root / "calibration_data.json"),
+                use_pcb=self.use_pcb,
             )
             startup = capture_startup_yaw(imu, cancel_event=cancel)
             feed_imu_yaw_prior(lidar, imu, startup)
-            lidar.start_coordinates(*PITCH)
-            self.session = LocalisationSession(lidar, imu, startup, LidarVelocityEstimator())
+            lidar.start_coordinates(*PITCH, use_pcb=self.use_pcb)
+            line_feed = LineSensorFeed(self.root / "line_sensor_calibration.json", use_pcb=self.use_pcb)
+            if line_feed.error:
+                self.notify(line_feed.error, error=True)
+            self.session = LocalisationSession(lidar, imu, startup, LidarVelocityEstimator(),
+                                               line_feed=line_feed, use_pcb=self.use_pcb)
         except BaseException:
             if imu is not None:
                 imu.stop()
@@ -227,6 +268,7 @@ class Hardware:
         controller = HardwareController.from_i2c_addresses(
             config.i2c_addresses, 50, 100, 400, 3,
             calibration_file=str(self.root / "calibration_data.json"),
+            use_pcb=self.use_pcb,
         )
         try:
             capture_startup_yaw(controller, cancel_event=cancel)
@@ -307,6 +349,8 @@ class Hardware:
                             self.status.update(mode="starting " + action, error=None)
                         if action == "localise":
                             self._localise(cancel)
+                        elif action == "pcb_start":
+                            self._monitor_pcb(cancel)
                         elif action == "gpio":
                             self._start_gpio()
                         elif action == "kick":
@@ -402,6 +446,7 @@ class Hardware:
                 self.pause.switch.deinit()
 
     def close(self):
+        self.pcb_stop.set()
         self.motion_cancel.set()
         self.active_cancel.set()
         self.localisation_stop_requested.set()

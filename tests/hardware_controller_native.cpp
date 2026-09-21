@@ -10,6 +10,7 @@
 
 using namespace hardware;
 namespace {
+constexpr bool USE_PCB = false;
 struct Packet { int address; std::vector<uint8_t> bytes; };
 struct State {
     State() { imu.auto_reports = true; }
@@ -18,6 +19,7 @@ struct State {
     std::vector<Packet> packets;
     std::map<int, int32_t> speed;
     int delay_ms = 0;
+    int pcb_reads = 0, pcb_kicks = 0;
     int fail_address = -1, fail_opcode = -1, bad_firmware_address = -1;
     std::atomic<bool> in_transfer{false};
     std::atomic<bool> block_motor{false}, motor_blocked{false};
@@ -38,6 +40,18 @@ public:
         }
         // Once an IMU header is read, all chunks must finish before any other I/O.
         assert(!state_->imu.peeked);
+        if (address == 0x37) {
+            if (state_->fail_address == address) throw std::runtime_error("PCB unavailable");
+            if (reading) {
+                assert(size == 32);
+                for (size_t i = 0; i < size; ++i) data[i] = i;
+                ++state_->pcb_reads;
+            } else {
+                assert(size == 1 && data[0] == 255);
+                ++state_->pcb_kicks;
+            }
+            return;
+        }
         if (address == 0x3c) {
             state_->packets.push_back({address, {data, data + size}});
             if (state_->fail_address == address) throw std::runtime_error("OLED unavailable");
@@ -178,7 +192,12 @@ void imu_protocol() {
 void native_yaw_control() {
     auto state = std::make_shared<State>();
     state->imu.auto_reports = true;
-    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state), 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
+    // PCB polling is disabled by default: never present initial zeroes as a scan.
+    auto pcb = controller.get_pcb_snapshot();
+    assert(!pcb.valid && !pcb.timestamp_s && !pcb.age_s);
+    pcb.readings[0] = 255;
+    assert(controller.get_pcb_snapshot().readings[0] == 0); // Owned copy.
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     controller.set_startup_yaw(0);
@@ -246,7 +265,7 @@ void imu_initialization_failures() {
         state->imu.fail_feature = failure == 1;
         state->imu.omit_reset = failure == 2;
         throws([&] {
-            HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+            HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state), 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
         });
         for (int i = 0; i < 5; ++i) {
             assert(state->speed[25+i] == 0);
@@ -281,7 +300,7 @@ void kinematics() {
 void lifecycle(int count) {
     auto state = std::make_shared<State>();
     HardwareController controller(calibration(count), config, "unused", std::make_unique<FakeWire>(state),
-                                  0x4a, 10, -1, "", nullptr, 2.5, 0.75);
+                                  0x4a, 10, -1, "", nullptr, 2.5, 0.75, 0.02, 0.5, nullptr, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     {
@@ -359,7 +378,7 @@ void kicker_control() {
     auto gpio = std::make_shared<KickState>();
     HardwareController controller(calibration(4), config, "unused",
         std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
-        std::make_unique<FakeKicker>(gpio), 8.0, 1.0, 0.01, 0.1);
+        std::make_unique<FakeKicker>(gpio), 8.0, 1.0, 0.01, 0.1, nullptr, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     auto wait = [&](size_t count, bool ended) {
@@ -401,7 +420,7 @@ void kicker_failure() {
     gpio->fail_high = true;
     HardwareController controller(calibration(4), config, "unused",
         std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
-        std::make_unique<FakeKicker>(gpio));
+        std::make_unique<FakeKicker>(gpio), 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     controller.move(0, 0, 0, 0, 0, true);
@@ -422,14 +441,14 @@ void kicker_initialization_cleanup() {
     throws([&] {
         HardwareController controller(calibration(4), config, "unused",
             std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
-            std::make_unique<FakeKicker>(gpio));
+            std::make_unique<FakeKicker>(gpio), 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
     });
     assert(gpio->closed && !gpio->active && gpio->starts.empty());
 }
 void capped_acceleration() {
     auto state = std::make_shared<State>();
     state->delay_ms = 100; // Simulate slow I2C; the ramp must still cap dt at 40 ms.
-    HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state));
+    HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state), 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
     controller.move(0, 1800, 0, 0, 0);
     wait_ticks(controller, 8);
     controller.stop();
@@ -453,11 +472,11 @@ void failures() {
     auto state = std::make_shared<State>();
     state->bad_firmware_address = 26;
     throws([&] {
-        HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+        HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state), 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
     });
     for (int i = 0; i < 5; ++i) assert(has_packet(*state, 25+i, {0x21, 2}));
     state = std::make_shared<State>();
-    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state), 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     {
@@ -485,12 +504,12 @@ void failures() {
     controller.stop(); // Retrying shutdown after a transient bus failure works.
     auto invalid = calibration(4);
     invalid[1].address = invalid[0].address;
-    throws([&] { HardwareController bad(invalid, config, "/no/hardware"); });
+    throws([&] { HardwareController bad(invalid, config, "/no/hardware", nullptr, 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB); });
 }
 }
 void dynamic_current_limits() {
     auto state = std::make_shared<State>();
-    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state), 0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     controller.set_drive_current_limits(0.75, 2.5);
@@ -520,7 +539,7 @@ void shared_display_lifecycle() {
     auto wire = std::make_shared<FakeWire>(state);
     auto display = std::make_shared<StatusDisplay>("unused", 0x3c, wire);
     HardwareController controller(calibration(4), config, "unused", nullptr,
-                                  0x4a, 10, -1, "", nullptr, 8, 1, 0.02, 0.5, display);
+                                  0x4a, 10, -1, "", nullptr, 8, 1, 0.02, 0.5, display, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     display->update("STRIKER", true, "RUNNING");
@@ -549,7 +568,7 @@ void imu_pause_finishes_kicker() {
     auto gpio = std::make_shared<KickState>();
     HardwareController controller(calibration(5), config, "unused",
         std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
-        std::make_unique<FakeKicker>(gpio), 8, 1, 0.4, 0.1);
+        std::make_unique<FakeKicker>(gpio), 8, 1, 0.4, 0.1, nullptr, USE_PCB);
     controller.set_startup_yaw(0);
     await_condition([&] { return controller.health().imu_healthy; });
     controller.move(0, 500, 0, 0, 1, true);
@@ -576,6 +595,26 @@ void imu_pause_finishes_kicker() {
     controller.stop();
 }
 int main() {
+    // Explicit enabled-path test; all interactive defaults remain USE_PCB=false.
+    for (bool inject_failure : {false, true}) {
+        auto state = std::make_shared<State>();
+        HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state),
+            0x4a, 10, 27, "", nullptr, 8, 1, 0.02, 0.5, nullptr, true);
+        controller.set_startup_yaw(0);
+        await_condition([&] { return controller.get_pcb_snapshot().valid; });
+        assert(controller.get_pcb_snapshot().readings[31] == 31);
+        controller.move(0, 0, 0, 0, 0, true);
+        await_condition([&] { std::lock_guard<std::mutex> lock(state->mutex); return state->pcb_kicks == 1; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(70));
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            assert(state->pcb_kicks == 1);
+            if (inject_failure) state->fail_address = 0x37;
+        }
+        if (inject_failure) await_condition([&] { return !controller.get_pcb_snapshot().valid; });
+        controller.stop();
+        assert(!controller.get_pcb_snapshot().valid);
+    }
     shared_display_lifecycle();
     imu_pause_finishes_kicker();
     dynamic_current_limits();

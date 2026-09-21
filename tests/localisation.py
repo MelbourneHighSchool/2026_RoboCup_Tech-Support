@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 
+from lib.line_sensors import LineSensorFeed
 from lib.localisation_service import (
     LidarVelocityEstimator,
     capture_startup_yaw,
@@ -25,6 +26,9 @@ from lib.localisation_service import (
     get_yaw,
     predict_odometry,
 )
+
+USE_PCB = False
+LINE_SENSOR_FEED = LineSensorFeed(use_pcb=USE_PCB)
 
 TARGET_TOLERANCE_MM = 10
 MAX_SPEED_MM_S = 500
@@ -263,6 +267,7 @@ def drive_to_target(
             yaw_for_odom,
             last_pose_time,
             apply_trust=apply_trust,
+            line_feed=LINE_SENSOR_FEED,
         )
         last_scan_sequence = print_scan_correction_if_new(
             lidar_module, last_scan_sequence
@@ -379,6 +384,7 @@ def wait_for_target_while_localising(
             yaw_for_odom,
             last_pose_time,
             apply_trust=apply_trust,
+            line_feed=LINE_SENSOR_FEED,
         )
         last_scan_sequence = print_scan_correction_if_new(
             lidar_module, last_scan_sequence
@@ -426,6 +432,7 @@ def monitor_pose(
             lidar_velocity,
             yaw_for_odom,
             last_pose_time,
+            line_feed=LINE_SENSOR_FEED,
         )
         last_scan_sequence = print_scan_correction_if_new(
             lidar_module, last_scan_sequence
@@ -485,7 +492,7 @@ def main():
             time.sleep(0.1)
 
         print("Initializing native motors and IMU...")
-        imu = create_hardware(max_motor_rpm=MAX_MOTOR_RPM)
+        imu = create_hardware(max_motor_rpm=MAX_MOTOR_RPM, use_pcb=USE_PCB)
         movement_controller = imu
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.1f} deg")
@@ -493,7 +500,7 @@ def main():
 
         lidar.set_motion_noise(args.motion_noise)
         print(f"Motion noise coefficient: {args.motion_noise:g} sqrt(s)")
-        lidar.start_coordinates(PITCH_X, PITCH_Y)
+        lidar.start_coordinates(PITCH_X, PITCH_Y, use_pcb=USE_PCB)
 
         print("Waiting for first pose estimate...")
         last_pose_time = time.monotonic()
@@ -505,9 +512,9 @@ def main():
             if gyro_z is not None:
                 omega = gyro_z
             feed_imu_yaw_prior(lidar, imu, startup_yaw)
-            # Zero translation still applies process noise so particles can explore
-            # after resampling; without this the filter often never reaches confidence.
-            lidar.predict_odometry(0.0, 0.0, omega, now - last_pose_time)
+            vx, vy = imu.get_measured_body_velocity_mm_s(imu.get_yaw() or 0.0)
+            lidar.predict_odometry(vx, vy, omega, now - last_pose_time)
+            LINE_SENSOR_FEED.update(lidar, imu)
             last_pose_time = now
             if now - last_status_print >= 0.5:
                 print_localisation_status(lidar)

@@ -10,17 +10,17 @@ This repo was created to share our code to provide inspiration to other teams. H
 
 `tests/` contains various test files to test various parts of our bot
 
-`lib/` contains code that directly interfaces with the hardware
+`lib/` contains code that directly interfaces with the hardware on the Pi
+
+`STM32/` contains the firmware for the STM32 on our PCB
 
 `calibration/` contains motor driver calibration (`calibration/motors.py`) and ball-distance calibration (`calibration/ball_distance.py`).
 
 `training/` contains all the code used to train our models on my hardware. I do not recommend using this code as it was only used to train a very specific model with a very specific setup on my specific computer.
 
-`legacy/` contains retired runtime implementations and the Python motor code
-still required by the calibration workflow. Normal robot operation uses the
-native `lib.hardware_controller` extension.
+`legacy/` contains old code which is no longer used, such as the python movement controller (this was ported to a C++ Hardware Controller in `lib/`)
 
-The below files are the most important, and have more information about them in comments inside of them.
+The below files are the most important, and are annotated extensively:
 
 `config.txt` includes the settings that vary between bots. An example can be found in `example_config.txt`
 
@@ -36,7 +36,7 @@ The models themselves are stored in `open-soccer-detect-n_hailo_model` and `open
 
 ## AI Declaration
 
-Generative AI tools such as GitHub Copilot and Cursor were used to assist in writing the code in this repo. We believe in using AI to enhance human development, not replace it, so in accordance with the MHS Robotics Club Generative AI policy, all essential code (such as `main.py`, `defence.py`, etc) has been verified by our team. However, test code and code used for model training was mostly written by AI, as it is not used during gameplay.
+Generative AI tools such as GitHub Copilot, Codex and Cursor were used to assist in writing the code in this repo. We believe in using AI to enhance human development, not replace it, so in accordance with the MHS Robotics Club Generative AI policy, all essential code (such as `main.py`, `defence.py`, etc) has been either written or extensively verified by our team. However, test code (such as the calibration dashboard) and code used for model training was mostly written by AI, as it is not used during gameplay.
 
 ## Contact
 

@@ -2,6 +2,8 @@
 import sys
 import time
 
+USE_PCB = False
+
 LIDAR_BAUDRATE = 460800
 
 
@@ -22,7 +24,7 @@ def main():
     while not lidar.is_scan_ready():
         time.sleep(0.1)
 
-    lidar.start_coordinates(2430, 1820)
+    lidar.start_coordinates(2430, 1820, use_pcb=USE_PCB)
 
     print("Waiting for pose estimate...")
     while not lidar.is_coordinates_ready():

@@ -8,7 +8,10 @@ import time
 from lib import lidar, send_log
 from lib.camera import Camera
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
+from lib.line_sensors import LineSensorFeed
 from striker import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE
+
+USE_PCB = False
 
 PORT = send_log.PORT
 PITCH_WIDTH = 2430
@@ -60,7 +63,7 @@ def main():
 
         camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=90)
         camera.start()
-        hardware = create_hardware()
+        hardware = create_hardware(use_pcb=USE_PCB)
 
         startup_yaw = set_startup_yaw(hardware)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
@@ -68,9 +71,11 @@ def main():
         if yaw_relative is not None:
             lidar.set_imu_yaw(yaw_relative)
 
-        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT)
+        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT, use_pcb=USE_PCB)
+        line_sensor_feed = LineSensorFeed(use_pcb=USE_PCB)
 
         print("Waiting for first coordinate estimate...")
+        last_pose_time = time.monotonic()
         while not lidar.is_coordinates_ready():
             if _enter_pressed():
                 print("Shutdown requested, exiting.")
@@ -78,6 +83,11 @@ def main():
             yaw_relative = hardware.get_yaw()
             if yaw_relative is not None:
                 lidar.set_imu_yaw(yaw_relative)
+            now = time.monotonic()
+            vx, vy = hardware.get_measured_body_velocity_mm_s(yaw_relative or 0.0)
+            lidar.predict_odometry(vx, vy, hardware.get_gyro_z_deg_s() or 0.0, now - last_pose_time)
+            last_pose_time = now
+            line_sensor_feed.update(lidar, hardware)
             time.sleep(0.1)
 
         print("Streaming measured positions. Press Enter to shut down.")
@@ -101,7 +111,11 @@ def main():
 
             lidar.set_imu_yaw(yaw_relative)
             gyro_z = hardware.get_gyro_z_deg_s()
-            lidar.predict_odometry(0.0, 0.0, gyro_z or 0.0, 0.01)
+            now = time.monotonic()
+            vx, vy = hardware.get_measured_body_velocity_mm_s(yaw_relative)
+            lidar.predict_odometry(vx, vy, gyro_z or 0.0, now - last_pose_time)
+            last_pose_time = now
+            line_sensor_feed.update(lidar, hardware)
 
             x_pos, y_pos, mcl_yaw, _confidence = lidar.get_pose()
             if mcl_yaw is not None:
