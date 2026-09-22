@@ -75,12 +75,11 @@ def wrap_angle_deg(angle):
     return ((angle + 180) % 360) - 180
 
 
-def goal_box_empty(enemy_bot_positions):
+def enemy_bots_ahead(bot_x, enemy_bot_positions):
     """Return whether no enemy bot centre is inside the enemy goal box."""
     return not any(
-        ENEMY_PENALTY_MIN_X <= bot_x <= ENEMY_PENALTY_MAX_X
-        and ENEMY_PENALTY_MIN_Y <= bot_y <= ENEMY_PENALTY_MAX_Y
-        for bot_x, bot_y, *_ in enemy_bot_positions or ()
+        enemy_bot_x > bot_x
+        for enemy_bot_x, *_ in enemy_bot_positions or ()
     )
 
 
@@ -449,7 +448,7 @@ def striker(
         if (
             BALL_HIDING_ENABLED
             and not ball_hiding
-            and not goal_box_empty(enemy_bot_positions)
+            and not enemy_bots_ahead(x_pos, enemy_bot_positions)
             and dist_to_goal >= BALL_HIDING_START_DIST
         ):
             ball_hiding = True
