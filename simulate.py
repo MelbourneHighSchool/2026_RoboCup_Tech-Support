@@ -15,6 +15,7 @@ import pygame
 import websockets
 
 from defence import defence, goalie
+from lib.controller_state import decode_state
 from lib.session_replay import (
     EventTimeline,
     VideoReader,
@@ -22,7 +23,7 @@ from lib.session_replay import (
     game_event_tokens,
     load_recorded_session,
 )
-from striker import ShotState, striker
+from striker import striker
 from tests.bot import bot
 
 parser = argparse.ArgumentParser(
@@ -30,7 +31,7 @@ parser = argparse.ArgumentParser(
     epilog=(
         "Game log format: "
         "x_pos,y_pos,yaw,ball_x,ball_y,"
-        "ball_captured,bot_mode,steering_state,direction,speed,rotation,kick,dribbler"
+        "ball_captured,bot_mode,state,direction,speed,rotation,kick,dribbler"
         "[,bot1_x,bot1_y,...]"
     ),
 )
@@ -273,7 +274,7 @@ def parse_optional_bool(token: str | None) -> bool | None:
 CONTROLLER_LOG_FIELDS = (
     "ball_captured",
     "bot_mode",
-    "steering_state",
+    "state",
     "direction",
     "speed",
     "rotation",
@@ -330,7 +331,7 @@ def parse_log_frame(tokens: Sequence[str]) -> dict | None:
         controller = {
             "ball_captured": parse_optional_bool(tokens[5]),
             "bot_mode": tokens[6].strip() if tokens[6].strip().lower() != "none" else None,
-            "steering_state": parse_optional_bool(tokens[7]),
+            "state": decode_state(tokens[7]),
             "direction": parse_optional_float(tokens[8]),
             "speed": parse_optional_float(tokens[9]),
             "rotation": parse_optional_float(tokens[10]),
@@ -373,8 +374,7 @@ class Bot:
     desired_velocity: tuple = field(default_factory=lambda: (0.0, 0.0))
     velocity_x: float = 0.0
     velocity_y: float = 0.0
-    steering: bool = False
-    shot_state: ShotState = field(default_factory=ShotState)
+    state: object = None
 
     def __post_init__(self):
         self.current_color = self.base_color
@@ -633,7 +633,7 @@ def manual_control_from_keys(keys, current_yaw):
 YAW_CORRECT_PIXELS_PER_S = YAW_CORRECT_SPEED / MM_PER_PIXEL
 
 # Game log format:
-# x_pos,y_pos,yaw,ball_x,ball_y,ball_captured,bot_mode,steering_state,direction,speed,rotation,kick,dribbler[,bot1_x,bot1_y,...]
+# x_pos,y_pos,yaw,ball_x,ball_y,ball_captured,bot_mode,state,direction,speed,rotation,kick,dribbler[,bot1_x,bot1_y,...]
 
 def normalize_angle_deg(angle):
     return angle % 360
@@ -1318,13 +1318,13 @@ class LogControllerDebug:
         ("ball_y", "Ball Y"),
         ("ball_captured", "Ball captured"),
         ("bot_mode", "Bot mode"),
-        ("steering_state_in", "Steering (in)"),
+        ("state_in", "State (in)"),
     )
     OUTPUT_ROWS = (
         ("direction", "Direction"),
         ("speed", "Speed"),
         ("rotation", "Rotation"),
-        ("steering_state", "Steering (out)"),
+        ("state", "State (out)"),
         ("kick", "Kick"),
         ("dribbler", "Dribbler"),
     )
@@ -1399,15 +1399,13 @@ class LogControllerDebug:
         self.values["ball_y"].set(format_log_value(frame.get("ball_y")))
         self.values["ball_captured"].set(format_log_value(controller.get("ball_captured")))
         self.values["bot_mode"].set(format_log_value(controller.get("bot_mode")))
-        # Defence persists steering across calls; input is the previous frame's output.
-        steering_in = previous_controller.get("steering_state")
-        if steering_in is None and previous_frame is None:
-            steering_in = False
-        self.values["steering_state_in"].set(format_log_value(steering_in))
+        # Controller state input is the previous frame's output.
+        state_in = previous_controller.get("state")
+        self.values["state_in"].set(format_log_value(state_in))
         self.values["direction"].set(format_log_value(controller.get("direction")))
         self.values["speed"].set(format_log_value(controller.get("speed")))
         self.values["rotation"].set(format_log_value(controller.get("rotation")))
-        self.values["steering_state"].set(format_log_value(controller.get("steering_state")))
+        self.values["state"].set(format_log_value(controller.get("state")))
         self.values["kick"].set(format_log_value(controller.get("kick")))
         self.values["dribbler"].set(format_log_value(controller.get("dribbler")))
         other_bots = frame.get("other_bots") or []
@@ -1898,37 +1896,20 @@ else:
                         for other_x, other_y in controller_enemy_bot_positions
                     ]
 
-                if bot.controller is defence or bot.controller is striker or bot.controller is bot:
-                    direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
-                        controller_x,
-                        controller_y,
-                        controller_yaw,
-                        controller_ball_x,
-                        controller_ball_y,
-                        ball_captured,
-                        bot.steering,
-                        friendly_bot_positions=controller_friendly_bot_positions,
-                        enemy_bot_positions=controller_enemy_bot_positions,
-                        **({"shot_state": bot.shot_state} if bot.controller is striker else {}),
-                    )
-                    if controller_inverted:
-                        direction = invert_angle_deg(direction)
-                        rotation = invert_angle_deg(rotation)
-                    bot.steering = steering_state
-                else:
-                    direction, speed, rotation, kick_state, dribbler_state = bot.controller(
-                        controller_x,
-                        controller_y,
-                        controller_yaw,
-                        controller_ball_x,
-                        controller_ball_y,
-                        ball_captured,
-                        friendly_bot_positions=controller_friendly_bot_positions,
-                        enemy_bot_positions=controller_enemy_bot_positions,
-                    )
-                    if controller_inverted:
-                        direction = invert_angle_deg(direction)
-                        rotation = invert_angle_deg(rotation)
+                direction, speed, rotation, bot.state, kick_state, dribbler_state = bot.controller(
+                    controller_x,
+                    controller_y,
+                    controller_yaw,
+                    controller_ball_x,
+                    controller_ball_y,
+                    ball_captured,
+                    state=bot.state,
+                    friendly_bot_positions=controller_friendly_bot_positions,
+                    enemy_bot_positions=controller_enemy_bot_positions,
+                )
+                if controller_inverted:
+                    direction = invert_angle_deg(direction)
+                    rotation = invert_angle_deg(rotation)
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
 

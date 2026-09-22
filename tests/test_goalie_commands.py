@@ -35,7 +35,7 @@ class GoalieCommandTests(unittest.TestCase):
             self.assertGreater(speed, 0)
 
     def test_missing_ball_uses_centre_on_same_line(self):
-        self.assertEqual(goalie(GOALIE_BLOCK_X, 910, 90, None, None), (0, 0, 0, False, 0))
+        self.assertEqual(goalie(GOALIE_BLOCK_X, 910, 90, None, None), (0, 0, 0, None, False, 0))
         direction, speed, *_ = goalie(650, 910, 0, None, None)
         self.assertAlmostEqual(direction, 180)
         self.assertGreater(speed, 0)
@@ -48,8 +48,8 @@ class GoalieCommandTests(unittest.TestCase):
     def test_nearby_or_captured_ball_never_triggers_collection_or_kick(self):
         for captured in (False, True):
             command = goalie(GOALIE_BLOCK_X, 910, 0, 600, 910, ball_captured=captured)
-            self.assertEqual(command[1:], (0, 0, False, 0))
-            self.assertTrue(all(math.isfinite(value) for value in command))
+            self.assertEqual(command[1:], (0, 0, None, False, 0))
+            self.assertTrue(all(math.isfinite(value) for value in (*command[:3], *command[4:])))
 
 
 if __name__ == "__main__":

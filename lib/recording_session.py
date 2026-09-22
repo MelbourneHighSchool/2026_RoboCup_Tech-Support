@@ -21,7 +21,7 @@ GAME_FIELDS = (
     "ball_y",
     "ball_captured",
     "bot_mode",
-    "steering_state",
+    "state",
     "direction",
     "speed",
     "rotation",

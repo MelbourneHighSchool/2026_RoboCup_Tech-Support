@@ -5,9 +5,9 @@ def bot(
     ball_x,
     ball_y,
     ball_captured=False,
-    steering_state=False,
+    state=None,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
     """A simple bot that does nothing. Used for testing the simulation and visualisation."""
-    return None, 0, yaw, steering_state, False
+    return None, 0, yaw, None, False, 0

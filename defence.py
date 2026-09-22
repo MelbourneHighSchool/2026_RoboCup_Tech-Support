@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 
 # Goalie tracks along this fixed X line, with bounded sideways travel.
 GOALIE_BLOCK_X = 550
@@ -93,15 +94,20 @@ def keep_motion_inside_white_lines(x_pos, y_pos, direction, speed):
 # ball_x: x position of the ball
 # ball_y: y position of the ball
 # ball_captured: True when the ball is touching the capture zone
-# steering_state: caller-provided flag indicating if this bot is currently steering
+# state: controller-owned persistent state, or None on first call
 # friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
 # enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
 # Outputs:
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
-# steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
+# state: controller-owned state to pass into the next call.
 # kick: True if the bot should kick the ball
+@dataclass
+class DefenceState:
+    steering: bool = False
+
+
 def defence(
     x_pos,
     y_pos,
@@ -109,10 +115,12 @@ def defence(
     ball_x,
     ball_y,
     ball_captured=False,
-    steering_state=False,
+    state=None,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
+    if not isinstance(state, DefenceState):
+        state = DefenceState()
     dribbler = 0 # Whether the dribbler should be on.
     if friendly_bot_positions is None:
         friendly_bot_positions = []
@@ -128,9 +136,9 @@ def defence(
         rotation = 0
         steering = False
         kick = False
-        return direction, speed, rotation, steering, kick, dribbler
-    # Ensure the steering input is a boolean.
-    steering = bool(steering_state)
+        state.steering = steering
+        return direction, speed, rotation, state, kick, dribbler
+    steering = state.steering
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
@@ -191,7 +199,8 @@ def defence(
     direction, speed = keep_motion_inside_white_lines(
         x_pos, y_pos, direction + offset, speed
     )
-    return direction, speed, rotation, steering, kick, dribbler
+    state.steering = steering
+    return direction, speed, rotation, state, kick, dribbler
 
 # Inputs:
 # x_pos: x position of the robot
@@ -200,14 +209,14 @@ def defence(
 # ball_x: x position of the ball
 # ball_y: y position of the ball
 # ball_captured: True when the ball is touching the capture zone
-# steering_state: caller-provided flag indicating if this bot is currently steering
+# state: controller-owned persistent state, or None on first call
 # friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
 # enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
 # Outputs:
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
-# steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
+# state: controller-owned state to pass into the next call.
 # kick: True if the bot should kick the ball
 def goalie(
     x_pos,
@@ -216,6 +225,7 @@ def goalie(
     ball_x,
     ball_y,
     ball_captured=False,
+    state=None,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
@@ -251,4 +261,4 @@ def goalie(
     remaining = max(0, distance - GOALIE_STOP_DISTANCE)
     speed = min(GOALIE_MAX_SPEED, math.sqrt(2 * GOALIE_BRAKING_ACCEL * remaining))
     direction, speed = keep_motion_inside_white_lines(x_pos, y_pos, direction, speed)
-    return direction, speed, rotation, kick, dribbler
+    return direction, speed, rotation, None, kick, dribbler

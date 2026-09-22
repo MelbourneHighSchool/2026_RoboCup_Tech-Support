@@ -151,7 +151,7 @@ def game_event_tokens(event: dict) -> list[str]:
         "ball_y",
         "ball_captured",
         "bot_mode",
-        "steering_state",
+        "state",
         "direction",
         "speed",
         "rotation",
@@ -159,6 +159,7 @@ def game_event_tokens(event: dict) -> list[str]:
         "dribbler",
     )
     tokens = [str(event.get(field, "None")) for field in fields]
+    tokens[7] = str(event.get("state", event.get("steering_state", "None")))
     for position in json.loads(event.get("other_bots") or "[]"):
         tokens.extend(str(coordinate) for coordinate in position)
     return tokens

@@ -19,6 +19,7 @@ from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
 from lib.config import BotMode, load_config
+from lib.controller_state import encode_state
 from lib.game_status import GameStatus, ImuPause
 from lib.line_sensors import LineSensorFeed
 from lib.localisation_motion import (
@@ -38,8 +39,9 @@ ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between b
 USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
-CONSTANT_SPEED_TORQUE = 8.0  # Amps; The current limit when the bot is at a constant speed.
-ACCELERATION_TORQUE = 8.0  # Amps; The current limit when the bot is accelerating.
+CONSTANT_SPEED_TORQUE = 2.0  # Amps; The current limit when the bot is at a constant speed.
+ACCELERATION_TORQUE = 3.0  # Amps; The current limit when the bot is accelerating.
+DRIBBLER_TORQUE = 2.0  # Amps; The current limit for the dribbler motor.
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
 
 LIDAR_BAUDRATE = 460800
@@ -356,6 +358,7 @@ try:
         MAX_MOTOR_RPM,
         YAW_CORRECT_THRESHOLD,
         kicker_pin=int(KICKER_PIN.id),
+        dribbler_motor_current_limit=DRIBBLER_TORQUE,
         display=display,
         use_pcb=USE_PCB,
     )
@@ -438,8 +441,7 @@ try:
         peer.start()
         print(f"Peer communication started on UDP port {PEER_PORT} (bot_id={peer.bot_id})")
     print("Press Enter to shut down.")
-    steering_state = False
-    striker_shot_state = striker.ShotState()
+    controller_state = None
 
     ball_dx = 0
     ball_dy = 0
@@ -514,8 +516,7 @@ try:
             paused_yaw_reference_set = False
             next_paused_yaw_sample_time = time.monotonic()
         if not run:
-            striker_shot_state.reset()
-            steering_state = False
+            controller_state = None
             now = time.monotonic()
             health = hardware_controller.health()
             generation = health["imu_recovery_generation"]
@@ -655,45 +656,42 @@ try:
                 ball_x = peer_msg["ball_x"]
                 ball_y = peer_msg["ball_y"]
 
-            if bot_mode != BotMode.STRIKER:
-                striker_shot_state.reset()
             if bot_mode == BotMode.DEFENCE:
-                direction, speed, rotation, steering_state, kick, dribbler = defence.defence(
+                direction, speed, rotation, controller_state, kick, dribbler = defence.defence(
                     x_pos,
                     y_pos,
                     yaw,
                     ball_x,
                     ball_y,
                     ball_captured,
-                    steering_state=steering_state,
+                    state=controller_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
                 )
             elif bot_mode == BotMode.STRIKER:
-                direction, speed, rotation, steering_state, kick, dribbler = striker.striker(
+                direction, speed, rotation, controller_state, kick, dribbler = striker.striker(
                     x_pos,
                     y_pos,
                     yaw,
                     ball_x,
                     ball_y,
                     ball_captured,
-                    steering_state=steering_state,
+                    state=controller_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
-                    shot_state=striker_shot_state,
                 )
             elif bot_mode == BotMode.GOALIE:
-                direction, speed, rotation, kick, dribbler = defence.goalie(
+                direction, speed, rotation, controller_state, kick, dribbler = defence.goalie(
                     x_pos,
                     y_pos,
                     yaw,
                     ball_x,
                     ball_y,
                     ball_captured,
+                    state=controller_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
                 )
-                steering_state = False
             if (
                 args.stream
                 or log_recorder_thread is not None
@@ -707,7 +705,7 @@ try:
                     ball_y,
                     ball_captured,
                     bot_mode.name,
-                    steering_state,
+                    encode_state(controller_state),
                     direction,
                     speed,
                     rotation,

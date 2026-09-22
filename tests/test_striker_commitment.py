@@ -9,12 +9,12 @@ def step(state, yaw=0, enemies=(), now=0, x=1800, y=1040, captured=True):
         x + 100 * math.cos(math.radians(yaw)),
         y + 100 * math.sin(math.radians(yaw)),
         ball_captured=captured, enemy_bot_positions=enemies,
-        shot_state=state, now=now,
+        state=state, now=now,
     )
 
 
 def test_stationary_blocker_does_not_flip_target_as_ball_rotates():
-    state = striker.ShotState()
+    state = striker.StrikerState()
     outputs = [step(state, yaw, [(2050, 1040)], i * 0.1)
                for i, yaw in enumerate([105, 110, 105, 110, 120, 100])]
     assert len({output[2] for output in outputs}) == 1
@@ -22,7 +22,7 @@ def test_stationary_blocker_does_not_flip_target_as_ball_rotates():
 
 
 def test_reposition_requires_continuously_open_lane():
-    state = striker.ShotState()
+    state = striker.StrikerState()
     step(state, enemies=[(1900, 1040)])
     assert state.repositioning
     step(state, now=1)
@@ -37,7 +37,7 @@ def test_reposition_requires_continuously_open_lane():
 
 
 def test_blocked_aim_is_held_briefly_but_never_kicks_through_blocker():
-    state = striker.ShotState()
+    state = striker.StrikerState()
     step(state, x=1800, y=910)
     aim = state.aim
     assert aim is not None
@@ -52,24 +52,24 @@ def test_blocked_aim_is_held_briefly_but_never_kicks_through_blocker():
 
 
 def test_capture_loss_resets_commitment_and_robots_do_not_share_state():
-    first, second = striker.ShotState(), striker.ShotState()
+    first, second = striker.StrikerState(), striker.StrikerState()
     step(first, enemies=[(1900, 1040)])
     step(second)
     assert first.repositioning
     assert second.aim is not None
     step(first, captured=False)
-    assert first == striker.ShotState()
+    assert first == striker.StrikerState()
 
 
 def test_open_lane_can_still_kick():
-    state = striker.ShotState()
+    state = striker.StrikerState()
     step(state, y=910)
     out = step(state, yaw=state.aim, y=910, now=0.1)
     assert out[4]
 
 
 def test_different_lane_cannot_instantly_reverse_aim():
-    state = striker.ShotState(aim=30)
+    state = striker.StrikerState(aim=30)
     assert state.select(-30, 0) == 30
     assert state.select(-30, 0.2) == 30
     assert state.select(-30, 0.4) is None

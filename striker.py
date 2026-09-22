@@ -29,10 +29,21 @@ WHITE_MAX_X = 2180
 WHITE_MIN_Y = 250
 WHITE_MAX_Y = 1570
 
+# Own (yellow-side, in the normalized strategy frame) penalty-box markings.
+OWN_PENALTY_MAX_X = 600
+OWN_PENALTY_MIN_Y = 460
+OWN_PENALTY_MAX_Y = 1360
+
+# Enemy (cyan) penalty-box markings in the normalized strategy frame.
+ENEMY_PENALTY_MIN_X = 1830
+ENEMY_PENALTY_MAX_X = 2130
+ENEMY_PENALTY_MIN_Y = 460
+ENEMY_PENALTY_MAX_Y = 1360
+
 # Short pitch axis (Y): used to pick which sideline to drive toward.
 PITCH_WIDTH = 1820
 # How close to the white sideline before switching from wall-drive to upfield.
-BALL_HIDING_LINE_THRESHOLD = 150
+BALL_HIDING_LINE_THRESHOLD = 140
 # Set to False to disable the ball-hiding strategy.
 BALL_HIDING_ENABLED = True
 # Distance to goal (mm) at which ball hiding starts / ends.
@@ -45,6 +56,7 @@ CLOSE_SHOOTING_Y_DIST = 100
 
 BALL_RADIUS = 21 # mm, radius of the ball
 ROBOT_RADIUS = 110 # mm, radius used for shot clearance around enemy bot centres
+BOUNDARY_STOP_MARGIN = 15 # mm reserved for braking/localisation error
 # Minimum angular clearance (deg) from the near goal side wall when banking off the far wall.
 SIDE_WALL_CLEARANCE_DEG = 5
 # When no shot/rebound is possible, pull this far toward own goal while drifting to mid Y.
@@ -61,6 +73,59 @@ BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity 
 
 def wrap_angle_deg(angle):
     return ((angle + 180) % 360) - 180
+
+
+def goal_box_empty(enemy_bot_positions):
+    """Return whether no enemy bot centre is inside the enemy goal box."""
+    return not any(
+        ENEMY_PENALTY_MIN_X <= bot_x <= ENEMY_PENALTY_MAX_X
+        and ENEMY_PENALTY_MIN_Y <= bot_y <= ENEMY_PENALTY_MAX_Y
+        for bot_x, bot_y, *_ in enemy_bot_positions or ()
+    )
+
+
+def keep_motion_in_legal_area(x_pos, y_pos, direction, speed):
+    """Remove velocity components that cross a white line or the own penalty box."""
+    if direction is None or speed <= 0:
+        return direction, speed
+
+    direction_rad = math.radians(direction)
+    velocity_x = speed * math.cos(direction_rad)
+    velocity_y = speed * math.sin(direction_rad)
+
+    stop_min_x = WHITE_MIN_X + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
+    stop_max_x = WHITE_MAX_X - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN
+    stop_min_y = WHITE_MIN_Y + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
+    stop_max_y = WHITE_MAX_Y - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN
+
+    if (x_pos <= stop_min_x and velocity_x < 0) or (
+        x_pos >= stop_max_x and velocity_x > 0
+    ):
+        velocity_x = 0
+    if (y_pos <= stop_min_y and velocity_y < 0) or (
+        y_pos >= stop_max_y and velocity_y > 0
+    ):
+        velocity_y = 0
+
+    # Expand the marked box by the robot radius and stopping margin so the
+    # robot body, rather than only its centre, remains outside the black lines.
+    penalty_max_x = OWN_PENALTY_MAX_X + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
+    penalty_min_y = OWN_PENALTY_MIN_Y - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN
+    penalty_max_y = OWN_PENALTY_MAX_Y + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
+
+    if penalty_min_y <= y_pos <= penalty_max_y:
+        if x_pos <= penalty_max_x and velocity_x < 0:
+            velocity_x = 0
+    elif x_pos <= penalty_max_x and (
+        (y_pos < penalty_min_y and velocity_y > 0)
+        or (y_pos > penalty_max_y and velocity_y < 0)
+    ):
+        velocity_y = 0
+
+    guarded_speed = math.hypot(velocity_x, velocity_y)
+    if guarded_speed <= 1e-9:
+        return direction, 0
+    return math.degrees(math.atan2(velocity_y, velocity_x)), guarded_speed
 
 
 def _angle_to(x0, y0, x1, y1):
@@ -249,8 +314,10 @@ SHOT_BLOCKED_HOLD_SECONDS = 0.3
 
 
 @dataclass
-class ShotState:
-    """Per-robot shot commitment, separate from the logged ball-hiding flag."""
+class StrikerState:
+    """All persistent striker decisions for one robot."""
+
+    ball_hiding: bool = False
 
     aim: float | None = None
     blocked_since: float | None = None
@@ -258,6 +325,10 @@ class ShotState:
     repositioning: bool = False
 
     def reset(self):
+        self.ball_hiding = False
+        self.reset_shot()
+
+    def reset_shot(self):
         self.aim = None
         self.blocked_since = None
         self.open_since = None
@@ -294,20 +365,19 @@ def striker(
     ball_x,
     ball_y,
     ball_captured=False,
-    steering_state=False,
+    state=None,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
     *,
-    shot_state=None,
     now=None,
 ):
     """Striker strategy: approach ball, hide along sideline when far, then aim and kick."""
-    if shot_state is None:
-        shot_state = ShotState()
+    if not isinstance(state, StrikerState):
+        state = StrikerState()
     if now is None:
         now = time.monotonic()
     if not ball_captured or ball_x is None or ball_y is None:
-        shot_state.reset()
+        state.reset()
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
@@ -326,7 +396,7 @@ def striker(
         rotation = 0
         kick = False
         dribbler = 1
-        return direction, speed, rotation, False, kick, dribbler
+        return direction, speed, rotation, state, kick, dribbler
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
@@ -341,9 +411,9 @@ def striker(
         if -10 < direction < 10:
             speed = 700
         elif 0 < direction < 180:
-            offset = 60
+            offset = 70
         else:
-            offset = -60
+            offset = -70
     elif dist > 500:
         speed = 1200
         dribbler = 0
@@ -353,9 +423,9 @@ def striker(
     # By default, the bot should not kick the ball.
     kick = False
 
-    # steering_state persists ball-hiding across calls (hysteresis between START/END).
+    # State persists ball-hiding across calls (hysteresis between START/END).
     ball_hiding = (
-        BALL_HIDING_ENABLED and bool(steering_state) if ball_captured else False
+        BALL_HIDING_ENABLED and state.ball_hiding if ball_captured else False
     )
 
     # Only kick if the ball is captured and lined up with the goal.
@@ -372,13 +442,14 @@ def striker(
         # Back-wall shot, or rebound off the opposite side wall; None if neither is possible.
         degrees_to_goal, shot_possible = goal_shot_aim(
             x_pos, y_pos, target_x, CYAN_GOAL_MOUTH_X, enemy_bot_positions,
-            preferred_angle=shot_state.aim,
+            preferred_angle=state.aim,
         )
 
         # Enter hide when far; stay hidden until closer than END (no dead-zone flutter).
         if (
             BALL_HIDING_ENABLED
             and not ball_hiding
+            and not goal_box_empty(enemy_bot_positions)
             and dist_to_goal >= BALL_HIDING_START_DIST
         ):
             ball_hiding = True
@@ -386,7 +457,7 @@ def striker(
             ball_hiding = False
 
         if ball_hiding:
-            shot_state.reset()
+            state.reset_shot()
             # Drive perpendicular to the goals toward a sideline until close enough to
             # aim. Keep dribbler on so losing the ball does not drop rotation to 0.
             offset = 0
@@ -402,7 +473,7 @@ def striker(
         else:
             # Plan from the robot centre: rotating the captured ball must not
             # alternately open and close the lane. Validate the actual ball below.
-            aim = shot_state.select(degrees_to_goal if shot_possible else None, now)
+            aim = state.select(degrees_to_goal if shot_possible else None, now)
             if aim is None:
                 rotation = 0
                 direction = _angle_to(
@@ -419,4 +490,8 @@ def striker(
     if kick == True:
         dribbler = -1
 
-    return direction + offset, speed, rotation, ball_hiding, kick, dribbler
+    direction, speed = keep_motion_in_legal_area(
+        x_pos, y_pos, direction + offset, speed
+    )
+    state.ball_hiding = ball_hiding
+    return direction, speed, rotation, state, kick, dribbler

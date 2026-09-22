@@ -61,7 +61,7 @@ def midfield_capture_hides_instead_of_reversing_yaw():
         ball_captured=True,
         enemy_bot_positions=[(2030, 910)],
     )
-    assert hiding
+    assert hiding.ball_hiding
     assert not kick
     assert speed > 0
     assert rotation in (120, 240)
@@ -78,7 +78,7 @@ def close_blocked_shot_keeps_facing_enemy_goal():
         ball_captured=True,
         enemy_bot_positions=[(1900, 910)],
     )
-    assert not hiding
+    assert not hiding.ball_hiding
     assert not kick
     assert rotation == 0
     assert striker.wrap_angle_deg(direction) < 0  # pull toward own goal / centre Y
@@ -92,7 +92,7 @@ def hiding_holds_until_a_shot_is_open():
         1215,
         250,
         ball_captured=True,
-        steering_state=striker.HIDE_LOW,
+        state=striker.HIDE_LOW,
         enemy_bot_positions=[(2100, 910)],
     )
     assert hiding == striker.HIDE_LOW
@@ -108,7 +108,7 @@ def blocked_wall_shot_rotates_180_then_crosses():
         1600,
         250,
         ball_captured=True,
-        steering_state=striker.HIDE_LOW,
+        state=striker.HIDE_LOW,
         enemy_bot_positions=enemy,
     )
     assert not kick
@@ -123,7 +123,7 @@ def blocked_wall_shot_rotates_180_then_crosses():
         1600,
         250,
         ball_captured=True,
-        steering_state=state,
+        state=state,
         enemy_bot_positions=enemy,
     )
     assert state == striker.CROSS_TO_HIGH
@@ -142,7 +142,7 @@ def after_cross_without_shot_cuts_inward():
         1600,
         1570,
         ball_captured=True,
-        steering_state=striker.CUT_IN,
+        state=striker.CUT_IN,
         enemy_bot_positions=enemy,
     )
     assert not kick
@@ -157,7 +157,7 @@ def after_cross_without_shot_cuts_inward():
         1600,
         1570,
         ball_captured=True,
-        steering_state=striker.CUT_IN,
+        state=striker.CUT_IN,
         enemy_bot_positions=enemy,
     )
     assert not kick
@@ -175,7 +175,7 @@ def after_cross_without_shot_cuts_inward():
         1600,
         1570,
         ball_captured=True,
-        steering_state=state,
+        state=state,
         enemy_bot_positions=[],
     )
     assert state == striker.CUT_IN
@@ -186,7 +186,7 @@ def after_cross_without_shot_cuts_inward():
         1600,
         1570,
         ball_captured=True,
-        steering_state=state,
+        state=state,
         enemy_bot_positions=enemy,
     )
     assert state == striker.CUT_IN
