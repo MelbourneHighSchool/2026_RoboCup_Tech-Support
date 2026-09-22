@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 
 _captures = {}
 
@@ -14,6 +15,7 @@ _captures = {}
 class MotionCapture:
     def __init__(self, path, config):
         self.path = path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "x", encoding="utf-8") as stream:
             stream.write(json.dumps({"type": "header", "version": 1, **config}) + "\n")
         self.queue = queue.Queue(maxsize=256)
@@ -58,7 +60,7 @@ class MotionCapture:
 
 
 def configure_motion(lidar, *, use_pcb=False, pitch=(2430, 1820), motion_noise=0.30):
-    """Configure once after starting localisation. Native rotation gate stays on."""
+    """Configure once after starting localisation. Angular-speed gating is disabled."""
     if not hasattr(lidar, "configure_deskew"):
         return  # Test doubles and older hardware-free utilities.
     mode = os.environ.get("SOCCER_DESKEW", "full")
@@ -99,6 +101,15 @@ def record_floor(lidar):
         if snapshot["valid"] and snapshot["timestamp_s"] > capture.last_line_time:
             capture.last_line_time = snapshot["timestamp_s"]
             capture.record({"type": "floor", "sample": snapshot})
+
+
+def record_diagnostic_event(lidar, event_type, **fields):
+    """Append command/phase/live diagnostics to an active motion capture."""
+    if event_type in {"header", "motion", "scan", "floor", "health", "footer"}:
+        raise ValueError(f"{event_type!r} is reserved for the capture format")
+    capture = _captures.get(id(lidar))
+    if capture:
+        capture.record({"type": event_type, **fields})
 
 
 def close_motion_capture(lidar):

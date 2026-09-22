@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lib.localisation_motion import MotionCapture
+from lib.localisation_motion import MotionCapture, _captures, record_diagnostic_event
 from lib.localisation_service import LidarVelocityEstimator, predict_odometry
 from lib.replay_localisation import replay
 
@@ -59,12 +59,18 @@ def test_identical_replays_are_deterministic_and_render_plots(tmp_path):
 
 
 def test_capture_closes_with_header_footer_and_does_not_overwrite(tmp_path):
-    path = tmp_path / "motion.jsonl"
+    path = tmp_path / "new-run" / "motion.jsonl"
     capture = MotionCapture(path, {"mode": "full"})
+    lidar = object()
+    _captures[id(lidar)] = capture
     capture.record({"type": "motion", "sample": {"vx": 1}})
-    capture.close()
+    record_diagnostic_event(lidar, "command", phase="forward", speed_mm_s=500)
+    with pytest.raises(ValueError, match="reserved"):
+        record_diagnostic_event(lidar, "scan")
+    _captures.pop(id(lidar)).close()
     records = [json.loads(line) for line in path.read_text().splitlines()]
-    assert [row["type"] for row in records] == ["header", "motion", "footer"]
+    assert [row["type"] for row in records] == ["header", "motion", "command", "footer"]
+    assert records[2]["phase"] == "forward" and records[2]["speed_mm_s"] == 500
     assert records[-1]["dropped_events"] == 0
     with pytest.raises(FileExistsError):
         MotionCapture(path, {})

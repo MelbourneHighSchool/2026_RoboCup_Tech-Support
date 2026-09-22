@@ -2,7 +2,6 @@ import asyncio
 import copy
 import io
 import logging
-import math
 import socketserver
 import threading
 import time
@@ -27,29 +26,12 @@ from calibration.ball_distance import (
 )
 from lib.config import load_camera_bearing_offset
 from lib.hailo_ball import HailoBallDetector
-from lib.opencv import OpenCV
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BALL_MODEL_PATH = _PROJECT_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
-
-
-def _goal_lined_up(contours, frame_width, frame_height, bearing_offset_deg=270.0):
-    """Check the filled target goal along the configured forward image ray."""
-    mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
-    cv2.drawContours(mask, contours, -1, 255, cv2.FILLED)
-    ray = np.zeros_like(mask)
-    angle = math.radians(90.0 - bearing_offset_deg)
-    length = math.hypot(frame_width, frame_height)
-    centre = (frame_width // 2, frame_height // 2)
-    endpoint = (
-        round(centre[0] + length * math.cos(angle)),
-        round(centre[1] + length * math.sin(angle)),
-    )
-    cv2.line(ray, centre, endpoint, 255, 1)
-    return bool(np.any(mask & ray))
 
 
 def _detection_dict_from_xyxy(xyxy, confidence, frame_width, frame_height, *, point="centre"):
@@ -105,7 +87,6 @@ class Camera:
         detection_callback=None,
         diagnostics=False,
         bot_distance_calibration_file=DEFAULT_BOT_DISTANCE_CALIBRATION_FILE,
-        enable_goal_detection=True,
         camera_bearing_offset_deg=None,
     ):
         self.camera_bearing_offset_deg = (
@@ -116,8 +97,6 @@ class Camera:
         self.diagnostics_enabled = diagnostics
         self._diagnostic_snapshot = None
         self.inference_error = None
-        self.enable_goal_detection = enable_goal_detection
-        self.goal_detector = OpenCV() if enable_goal_detection else None
         self.ball_confidence = ball_confidence
         self.ball_model = None
         self.picam2 = None
@@ -156,7 +135,6 @@ class Camera:
             self._bearing = None
             self._distance = None
             self._bot_measurements = []
-            self._lined_up = not enable_goal_detection
             self._frame_id = 0
             self._measurement_lock = threading.Lock()
             self._capture_started = False
@@ -331,21 +309,20 @@ class Camera:
             return self._frame_id, self._bearing, self._distance
 
     def get_scene_measurement(self):
-        """Atomically return frame ID, ball bearing/distance, bots, and goal alignment.
+        """Atomically return frame ID, ball bearing/distance, and bots.
 
         Each bot entry is ``(bearing_deg, distance_mm)``. Distance may be ``None``
         when calibration is missing; bots without a usable bearing are omitted.
         """
         if self._is_shutting_down:
             with self._measurement_lock:
-                return self._frame_id, None, None, [], False
+                return self._frame_id, None, None, []
         with self._measurement_lock:
             return (
                 self._frame_id,
                 self._bearing,
                 self._distance,
                 list(self._bot_measurements),
-                self._lined_up,
             )
 
     def set_callback(self, callback_function):
@@ -511,25 +488,11 @@ class Camera:
                     continue
                 bot_measurements.append((bot_bearing, bot_distance))
 
-            if getattr(self, "enable_goal_detection", True):
-                hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                cv = getattr(self, "goal_detector", None) or OpenCV()
-                contours = cv.process_image(hsv_frame, True)
-                yellow_contours = cv.process_image(hsv_frame, False)
-                lined_up = _goal_lined_up(
-                    contours, frame_w, frame_h, self.camera_bearing_offset_deg
-                )
-            else:
-                contours, yellow_contours, lined_up = [], [], True
-
             with self._measurement_lock:
                 self._last_detection = detection
                 self._bearing = new_bearing
                 self._distance = new_distance
-                self._goal_contours = contours
-                self._yellow_goal_contours = yellow_contours
                 self._bot_measurements = bot_measurements
-                self._lined_up = lined_up
                 self._frame_id += 1
                 inference_sequence = self._frame_id
                 if getattr(self, "diagnostics_enabled", False):

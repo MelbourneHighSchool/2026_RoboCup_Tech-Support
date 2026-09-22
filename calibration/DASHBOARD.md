@@ -31,14 +31,12 @@ The **Detection model** selector lists compiled `open-soccer-detect-*_hailo_mode
 
 In **Distances**, select **Ball** or **Bot**. Each has its own samples, fit preview, and saved calibration. Samples need a fresh detection and a positive distance measured from your robot’s centre to the object’s centre. For bot samples, keep exactly one detected bot in view. Sample several distinct radial positions; duplicate radial positions are rejected to avoid ill-conditioned polynomial fits. **Held by dribbler** applies only to ball samples and preserves the existing capture-calibration metadata. Preview the curve and fit metrics, then Save. Clear/remove only edit the draft until Save.
 
-Goal bounds preview immediately for both blue/cyan and yellow. Save writes the preview bounds; Revert reloads the last save; Restore Defaults changes the draft back to the original values. A lower channel bound must not exceed its upper bound.
 
 Files in the project root:
 
 - `ball_distance_calibration.json`: existing distance format, including samples/resolution; reloaded into the dashboard camera after saving.
 - `bot_distance_calibration.json`: independent bot distance model in the same format; saved and reloaded by selecting Bot in Distances. Create this calibration before relying on bot world positions.
 - `calibration_data.json`: existing motor format; replaced only after every motor succeeds and shutdown succeeds.
-- `goal_thresholds.json`: `blue` and `yellow` objects, each with three-element `lower`/`upper` HSV arrays. Normal `OpenCV()`/camera startup loads these too. Restart another already-running consumer to load changes.
 - `calibration_backups/`: timestamped copies made before replacement. To restore, stop the dashboard and copy the chosen JSON back to its original root filename.
 
 **Download debug log** exports current diagnostics, up to 300 activity messages and approximately five minutes of one-second telemetry. The field uses X right, Y down, and clockwise-positive yaw; wheel body velocity uses forward/left. Scan points use the latest displayed pose, so this is a diagnostic overlay, not a motion-deskewed reconstruction. No particle-cloud binding is required.

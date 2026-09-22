@@ -194,7 +194,7 @@ class MainCameraFallbackTests(unittest.TestCase):
     def scene(self, *, captured=False, peer_ball=None, last_update=0, ready=False, yaw=0):
         peer = SimpleNamespace(send=lambda _: None, receive=lambda: peer_ball)
         values = {
-            "camera": SimpleNamespace(get_scene_measurement=lambda: (5, 0, 999, [(0, 900)], True)),
+            "camera": SimpleNamespace(get_scene_measurement=lambda: (5, 0, 999, [(0, 900)])),
             "status": SimpleNamespace(camera_ready=ready), "last_camera_frame_id": 4,
             "last_camera_bot_positions": [(999, 999)], "x_pos": 100, "y_pos": 200,
             "yaw": yaw, "math": math, "time": SimpleNamespace(time=lambda: 10),
@@ -212,7 +212,6 @@ class MainCameraFallbackTests(unittest.TestCase):
         self.assertIsNone(values["ball_x"])
         self.assertIsNone(values["ball_y"])
         self.assertEqual(values["enemy_bot_positions"], [])
-        self.assertFalse(values["lined_up"])
 
     def test_disconnected_camera_uses_peer_ball(self):
         values = self.scene(peer_ball={"ball_x": 700, "ball_y": 800})
@@ -232,7 +231,6 @@ class MainCameraFallbackTests(unittest.TestCase):
         values = self.scene(ready=True)
         self.assertEqual((values["ball_x"], values["ball_y"]), (1099, 200))
         self.assertEqual(values["enemy_bot_positions"], [(1000, 200)])
-        self.assertTrue(values["lined_up"])
 
     def test_camera_scene_is_rotated_by_robot_yaw(self):
         values = self.scene(ready=True, yaw=90)

@@ -3,8 +3,8 @@ const $ = id => document.getElementById(id);
 const lineTab = document.createElement('button');
 lineTab.dataset.tab = 'lineSensors'; lineTab.textContent = 'Line sensors';
 document.querySelector('nav').append(lineTab);
-let token = null, state = null, tab = 'camera', frozen = null, thresholds = null;
-let editUntil = 0, messageUntil = 0, lastEvent = '', samplesSignature = '', fitSignature = '';
+let token = null, state = null, tab = 'camera', frozen = null;
+let messageUntil = 0, lastEvent = '', samplesSignature = '', fitSignature = '';
 let modelsSignature = '';
 let lineDirty = false, lineLoaded = false, lineEditVersion = 0;
 const fmt = (v, digits = 1) => v == null ? 'unavailable' : Number(v).toFixed(digits);
@@ -127,11 +127,6 @@ $('distanceTarget').onchange = () => {
 };
 handle('sample', 'sample', () => ({...distanceTarget(), distance:$('distance').value, captured:$('captured').checked}));
 handle('fit', 'fit', distanceTarget); handle('saveBall', 'save_ball', distanceTarget); handle('clearSamples', 'clear_samples', distanceTarget);
-$('saveGoals').onclick = async () => {
-  try { clearTimeout(goalTimer); await api('thresholds', {thresholds}); await api('save_goals'); }
-  catch(e) { message(e.message); }
-};
-for (const [id, action] of [['revertGoals','revert_goals'],['defaultGoals','default_goals']]) $(id).onclick = async () => { try { clearTimeout(goalTimer); editUntil = 0; await api(action); } catch(e) { message(e.message); } };
 $('localise').onclick = async () => {
   try { await api($('localise').dataset.running === 'true' ? 'stop_localise' : 'localise', Object.fromEntries([...document.querySelectorAll('.poll-rate')].map(el => [el.id, Number(el.value)]))); }
   catch (e) { message(e.message); }
@@ -149,7 +144,6 @@ function streams() {
     if (img.closest('.panel').id !== tab || (img.id === 'cameraPreview' && frozen)) { if (img.id !== 'cameraPreview' || !frozen) img.removeAttribute('src'); continue; }
     let view = img.dataset.view;
     if (img.id === 'cameraPreview' && $('rawToggle').checked) view = 'raw';
-    if (img.id === 'goalPreview' && !$('contourToggle').checked) view = 'camera';
     const path = '/stream.mjpg?view=' + view;
     if (img.getAttribute('src') !== path) img.src = path;
   }
@@ -160,7 +154,7 @@ for (const button of document.querySelectorAll('[data-tab]')) button.onclick = (
   for (const panel of document.querySelectorAll('.panel')) panel.classList.toggle('active', panel.id === tab);
   streams(); if (state) drawPitch(state.hardware);
 };
-$('rawToggle').onchange = streams; $('contourToggle').onchange = streams;
+$('rawToggle').onchange = streams;
 $('freeze').onclick = async () => {
   try {
     frozen = await api('freeze'); $('cameraPreview').src = '/frozen.png?id=' + frozen.id;
@@ -185,34 +179,6 @@ $('cameraPreview').onclick = async event => {
     $('pixelReadout').replaceChildren(swatch, document.createTextNode(`(${x}, ${y})\nRGB ${p.rgb.join(', ')}\nBGR ${p.bgr.join(', ')}\nHSV ${p.hsv.join(', ')}`));
   } catch (e) { message(e.message); }
 };
-let goalTimer;
-for (const colour of ['blue', 'yellow']) {
-  for (const side of ['lower', 'upper']) {
-    const title = document.createElement('div'); title.className = 'bound-title'; title.textContent = side.toUpperCase(); $(colour + 'Bounds').append(title);
-    ['H','S','V'].forEach((channel, index) => {
-      const row = document.createElement('div'); row.className = 'bounds-row';
-      const label = document.createElement('label'); label.textContent = channel; label.htmlFor = `${colour}-${side}-${index}-n`;
-      const range = document.createElement('input'); range.type = 'range'; range.min = 0; range.max = index ? 255 : 179; range.className = 'control'; range.setAttribute('aria-label', `${colour} ${side} ${channel}`);
-      const number = document.createElement('input'); number.type = 'number'; number.min = range.min; number.max = range.max; number.id = label.htmlFor; number.className = 'control';
-      range.id = `${colour}-${side}-${index}-r`; row.append(label,range,number); $(colour+'Bounds').append(row);
-      const update = input => {
-        const value = Number(input.value); if (!Number.isInteger(value) || value < 0 || value > Number(range.max) || !thresholds) return;
-        range.value = number.value = value; thresholds[colour][side][index] = value; editUntil = Date.now() + 1500;
-        clearTimeout(goalTimer); goalTimer = setTimeout(async () => {
-          try { await api('thresholds', {thresholds}); } catch(e) { message(e.message); }
-        }, 120);
-      };
-      range.oninput = () => update(range); number.oninput = () => update(number);
-    });
-  }
-}
-function syncBounds(bounds) {
-  if (Date.now() < editUntil) return;
-  thresholds = structuredClone(bounds);
-  for (const c of ['blue','yellow']) for (const side of ['lower','upper']) for (let i=0;i<3;i++) {
-    $(`${c}-${side}-${i}-r`).value = bounds[c][side][i]; $(`${c}-${side}-${i}-n`).value = bounds[c][side][i];
-  }
-}
 function readings(element, rows) {
   element.innerHTML = rows.map(([label,value]) => `<div class="reading"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
 }
@@ -260,7 +226,6 @@ function render(s) {
   $('localise').classList.toggle('primary', !localisationRunning);
   $('health').textContent = `CAMERA ${s.camera.status} | capture ${fmt(s.camera.fps.capture)} · inference ${fmt(s.camera.fps.inference)} · preview ${fmt(s.camera.fps.preview)} FPS | ${s.camera.age_s == null ? 'no frames' : 'frame age ' + fmt(s.camera.age_s) + 's' + (s.camera.age_s > .5 ? ' · STALE' : '')} | MOTORS ${s.hardware.mode}`;
   if (!$('addresses').value && s.addresses.length) $('addresses').value = s.addresses.join(',');
-  syncBounds(s.thresholds);
   readings($('cameraDetails'), [['Resolution',s.camera.resolution ? s.camera.resolution.join(' × ') : 'unavailable'],['Inference frame',s.camera.frame_id ?? 'unavailable'],['Ball distance fit',s.fit ? 'available' : 'not loaded'],['Bot distance fit',s.bot_fit ? 'available' : 'not loaded']]);
   readings($('detections'), s.camera.detections.map(d => [d.label + ' ' + fmt(d.confidence*100,0) + '%', `${fmt(d.bearing % 360)}° · ${d.distance == null ? 'distance unavailable' : fmt(d.distance,0)+' mm'}`]));
   if (!s.camera.detections.length) $('detections').textContent = 'No current detections';

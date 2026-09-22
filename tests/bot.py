@@ -8,7 +8,6 @@ def bot(
     steering_state=False,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
-    lined_up=False,
 ):
     """A simple bot that does nothing. Used for testing the simulation and visualisation."""
     return None, 0, yaw, steering_state, False

@@ -50,7 +50,6 @@ YAW_CORRECT_THRESHOLD = 3 # deg; threshold of allowable yaw error.
 CAMERA_PORT = 8000 # Port used for streaming the camera feed for debugging.
 CAMERA_RESOLUTION = (640, 640)
 CAMERA_FPS = 90
-ENABLE_GOAL_DETECTION = True  # False skips goal contours and always reports lined_up=True.
 # Camera-detected bots within this distance of self or the UDP teammate are
 # treated as self/friendly rather than enemies.
 CAMERA_BOT_MATCH_MM = 100
@@ -411,7 +410,6 @@ try:
         CAMERA_PORT,
         resolution=CAMERA_RESOLUTION,
         frame_rate=CAMERA_FPS,
-        enable_goal_detection=ENABLE_GOAL_DETECTION,
         camera_bearing_offset_deg=config.camera_bearing_offset_deg,
         recording_path=(
             recording_session.video_path if recording_session is not None else None
@@ -441,6 +439,7 @@ try:
         print(f"Peer communication started on UDP port {PEER_PORT} (bot_id={peer.bot_id})")
     print("Press Enter to shut down.")
     steering_state = False
+    striker_shot_state = striker.ShotState()
 
     ball_dx = 0
     ball_dy = 0
@@ -515,6 +514,7 @@ try:
             paused_yaw_reference_set = False
             next_paused_yaw_sample_time = time.monotonic()
         if not run:
+            striker_shot_state.reset()
             steering_state = False
             now = time.monotonic()
             health = hardware_controller.health()
@@ -558,13 +558,11 @@ try:
                 ball_direction,
                 ball_distance,
                 bot_measurements,
-                lined_up,
             ) = camera.get_scene_measurement()
             camera_healthy = status.camera_ready
             if not camera_healthy:
                 ball_direction = ball_distance = None
                 bot_measurements = []
-                lined_up = False
                 last_camera_bot_positions = []
             has_new_camera_frame = camera_healthy and camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
@@ -657,6 +655,8 @@ try:
                 ball_x = peer_msg["ball_x"]
                 ball_y = peer_msg["ball_y"]
 
+            if bot_mode != BotMode.STRIKER:
+                striker_shot_state.reset()
             if bot_mode == BotMode.DEFENCE:
                 direction, speed, rotation, steering_state, kick, dribbler = defence.defence(
                     x_pos,
@@ -668,7 +668,6 @@ try:
                     steering_state=steering_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
-                    lined_up=lined_up,
                 )
             elif bot_mode == BotMode.STRIKER:
                 direction, speed, rotation, steering_state, kick, dribbler = striker.striker(
@@ -681,7 +680,7 @@ try:
                     steering_state=steering_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
-                    lined_up=lined_up,
+                    shot_state=striker_shot_state,
                 )
             elif bot_mode == BotMode.GOALIE:
                 direction, speed, rotation, kick, dribbler = defence.goalie(
@@ -693,7 +692,6 @@ try:
                     ball_captured,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
-                    lined_up=lined_up,
                 )
                 steering_state = False
             if (

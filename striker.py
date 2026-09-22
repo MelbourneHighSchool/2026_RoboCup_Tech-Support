@@ -1,4 +1,6 @@
 import math
+import time
+from dataclasses import dataclass
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -187,7 +189,9 @@ def kick_direction_scores(
     return True
 
 
-def goal_shot_aim(ball_x, ball_y, target_x, mouth_x, enemy_bot_positions=None):
+def goal_shot_aim(
+    ball_x, ball_y, target_x, mouth_x, enemy_bot_positions=None, *, preferred_angle=None
+):
     """Return (aim_angle_deg, True) for a back-wall or rebound shot, or (None, False)."""
     dx_back = target_x - ball_x
     if abs(dx_back) < 1e-6:
@@ -206,7 +210,7 @@ def goal_shot_aim(ball_x, ball_y, target_x, mouth_x, enemy_bot_positions=None):
         aim_y_min = max(GOAL_BACK_Y_MIN, visible_lo)
         aim_y_max = min(GOAL_BACK_Y_MAX, visible_hi)
 
-    candidates = []
+    candidates = [] if preferred_angle is None else [preferred_angle]
     if aim_y_min <= aim_y_max:
         # Prefer the centre, but try off-centre direct shots when a bot blocks it.
         for fraction in (0.5, 0.25, 0.75, 0.0, 1.0):
@@ -240,6 +244,49 @@ def goal_shot_aim(ball_x, ball_y, target_x, mouth_x, enemy_bot_positions=None):
     return None, False
 
 
+SHOT_OPEN_HOLD_SECONDS = 0.4
+SHOT_BLOCKED_HOLD_SECONDS = 0.3
+
+
+@dataclass
+class ShotState:
+    """Per-robot shot commitment, separate from the logged ball-hiding flag."""
+
+    aim: float | None = None
+    blocked_since: float | None = None
+    open_since: float | None = None
+    repositioning: bool = False
+
+    def reset(self):
+        self.aim = None
+        self.blocked_since = None
+        self.open_since = None
+        self.repositioning = False
+
+    def select(self, candidate, now):
+        # A newly preferred lane must not immediately reverse an existing aim.
+        if self.aim is not None and candidate != self.aim:
+            candidate = None
+        if candidate is None:
+            self.open_since = None
+            if self.blocked_since is None:
+                self.blocked_since = now
+            if self.aim is None or now - self.blocked_since >= SHOT_BLOCKED_HOLD_SECONDS:
+                self.aim = None
+                self.repositioning = True
+        else:
+            self.blocked_since = None
+            if self.repositioning:
+                if self.open_since is None:
+                    self.open_since = now
+                if now - self.open_since < SHOT_OPEN_HOLD_SECONDS:
+                    return None
+            self.aim = candidate
+            self.repositioning = False
+            self.open_since = None
+        return self.aim
+
+
 def striker(
     x_pos,
     y_pos,
@@ -250,9 +297,17 @@ def striker(
     steering_state=False,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
-    lined_up=False,
+    *,
+    shot_state=None,
+    now=None,
 ):
     """Striker strategy: approach ball, hide along sideline when far, then aim and kick."""
+    if shot_state is None:
+        shot_state = ShotState()
+    if now is None:
+        now = time.monotonic()
+    if not ball_captured or ball_x is None or ball_y is None:
+        shot_state.reset()
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
@@ -271,7 +326,7 @@ def striker(
         rotation = 0
         kick = False
         dribbler = 1
-        return direction, speed, rotation, steering_state, kick, dribbler
+        return direction, speed, rotation, False, kick, dribbler
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
@@ -316,7 +371,8 @@ def striker(
         )
         # Back-wall shot, or rebound off the opposite side wall; None if neither is possible.
         degrees_to_goal, shot_possible = goal_shot_aim(
-            ball_x, ball_y, target_x, CYAN_GOAL_MOUTH_X, enemy_bot_positions
+            x_pos, y_pos, target_x, CYAN_GOAL_MOUTH_X, enemy_bot_positions,
+            preferred_angle=shot_state.aim,
         )
 
         # Enter hide when far; stay hidden until closer than END (no dead-zone flutter).
@@ -330,6 +386,7 @@ def striker(
             ball_hiding = False
 
         if ball_hiding:
+            shot_state.reset()
             # Drive perpendicular to the goals toward a sideline until close enough to
             # aim. Keep dribbler on so losing the ball does not drop rotation to 0.
             offset = 0
@@ -342,33 +399,23 @@ def striker(
                 near_line = y_pos <= WHITE_MIN_Y + BALL_HIDING_LINE_THRESHOLD
             # Once tucked against the sideline, advance upfield while still facing the wall.
             direction = 0 if near_line else rotation
-        elif not shot_possible:
-            if y_pos > PITCH_WIDTH / 2 + CLOSE_SHOOTING_Y_DIST:
-                rotation = 120
-                direction = -90
-            elif y_pos < PITCH_WIDTH / 2 - CLOSE_SHOOTING_Y_DIST:
-                rotation = 240
-                direction = 90
-            elif abs(yaw) <= YAW_CORRECT_THRESHOLD:
-                kick = True
-            else:
+        else:
+            # Plan from the robot centre: rotating the captured ball must not
+            # alternately open and close the lane. Validate the actual ball below.
+            aim = shot_state.select(degrees_to_goal if shot_possible else None, now)
+            if aim is None:
                 rotation = 0
-                direction = 0
-        elif offset == 0 and dist_to_goal < shooting_end_dist:
-            # Turn and shoot once inside the distance for the selected hiding mode.
-            speed = 0
-            rotation = degrees_to_goal
-            if (
-                kick_direction_scores(
-                    ball_x,
-                    ball_y,
-                    yaw,
-                    target_x,
-                    CYAN_GOAL_MOUTH_X,
+                direction = _angle_to(
+                    x_pos, y_pos, x_pos - SHOT_REPOSITION_PULL_X, GOAL_CENTRE_Y
+                )
+                speed = 400
+            elif offset == 0 and dist_to_goal < shooting_end_dist:
+                speed = 0
+                rotation = aim
+                kick = kick_direction_scores(
+                    ball_x, ball_y, yaw, target_x, CYAN_GOAL_MOUTH_X,
                     enemy_bot_positions,
                 )
-            ):
-                kick = True
     if kick == True:
         dribbler = -1
 

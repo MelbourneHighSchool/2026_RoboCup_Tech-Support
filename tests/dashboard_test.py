@@ -34,7 +34,6 @@ from lib.localisation_service import (
     capture_startup_yaw,
     feed_imu_yaw_prior,
 )
-from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
 
 USE_PCB = False
 
@@ -250,11 +249,7 @@ def test_drive_rejects_invalid_target_yaw(value, dashboard):
                                     "addresses": [28, 32, 31, 30]}, token)
 
 
-def test_masks_pixel_picker_and_lossless_frozen_frame(dashboard):
-    hsv = np.array([[[110, 250, 200], [25, 200, 200], [0, 0, 0]]], dtype=np.uint8)
-    detector = OpenCV(DEFAULT_THRESHOLDS)
-    assert detector.mask(hsv, True).tolist() == [[255, 0, 0]]
-    assert detector.mask(hsv, False).tolist() == [[0, 255, 0]]
+def test_pixel_picker_and_lossless_frozen_frame(dashboard):
     install_snapshot(dashboard)
     original = dashboard.latest["frame"].copy()
     frozen = dashboard.freeze()
@@ -288,24 +283,6 @@ def test_scene_does_not_paint_source_frame(dashboard, monkeypatch):
     assert not np.array_equal(overlay, original)
     np.testing.assert_array_equal(snap["frame"], original)
 
-
-def test_goal_preview_save_revert_and_backup(dashboard):
-    saved = copy.deepcopy(DEFAULT_THRESHOLDS)
-    saved["blue"]["lower"][0] = 99
-    dashboard._edit("thresholds", {"thresholds": saved})
-    assert not (dashboard.root / "goal_thresholds.json").exists()
-    dashboard._edit("save_goals", {})
-    assert load_thresholds(dashboard.root / "goal_thresholds.json") == saved
-    dashboard._edit("default_goals", {})
-    assert dashboard.thresholds == DEFAULT_THRESHOLDS
-    dashboard._edit("revert_goals", {})
-    assert dashboard.thresholds == saved
-    dashboard._edit("save_goals", {})
-    assert len(list((dashboard.root / "calibration_backups").glob("*.json"))) == 1
-    invalid = copy.deepcopy(saved)
-    invalid["yellow"]["upper"][0] = 180
-    with pytest.raises(ValueError):
-        validate_thresholds(invalid)
 
 
 def test_ball_samples_fit_save_reload_and_stale_rejection(dashboard):
@@ -790,7 +767,7 @@ def test_camera_pipeline_shared_and_latest_buffer_bounded(tmp_path):
         for _ in range(20):
             assert app.state()["camera"]["status"] == "running"
         assert FakeCamera.instances == 1
-        assert len(app.streams) == 5
+        assert set(app.streams) == {"camera", "raw"}
         assert app.latest["frame_id"] <= app.camera.infer_count
         camera = app.camera
     finally:

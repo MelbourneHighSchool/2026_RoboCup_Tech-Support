@@ -24,7 +24,6 @@ from calibration.ball_distance import (
 from calibration.dashboard_hardware import PITCH, Hardware
 from lib.config import load_camera_bearing_offset
 from lib.line_sensors import line_thresholds
-from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
 
 USE_PCB = False
 
@@ -211,7 +210,6 @@ class Dashboard:
         self.frozen = OrderedDict()
         self.events = deque(maxlen=300)
         self.history = deque(maxlen=300)
-        self.thresholds = load_thresholds(self.root / "goal_thresholds.json")
         self.line_thresholds = {"black": 64, "white": 192}
         try:
             self.line_thresholds = line_thresholds(json.loads(
@@ -296,7 +294,7 @@ class Dashboard:
                            "active_model": self.active_model,
                            "requested_model": self.requested_model},
                 "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
-                "hardware": self.hardware.snapshot(), "thresholds": copy.deepcopy(self.thresholds),
+                "hardware": self.hardware.snapshot(),
                 "line_thresholds": dict(self.line_thresholds),
                 "bot_samples": list(self.bot_samples), "bot_fit": self.bot_fit,
                 "samples": list(self.samples), "fit": self.fit, "addresses": self.default_addresses,
@@ -368,13 +366,11 @@ class Dashboard:
                 data["addresses"] = addresses(data.get("addresses"))
                 if data.get("wheels_clear") is not True:
                     raise ValueError("Confirm that wheels are clear before calibration")
-            allowed = {"manual_start", "gpio", "kick", "drive", "calibrate", "localise", "thresholds", "save_goals", "revert_goals",
-                       "default_goals", "sample", "remove_sample", "clear_samples", "fit", "save_ball",
+            allowed = {"manual_start", "gpio", "kick", "drive", "calibrate", "localise",
+                       "sample", "remove_sample", "clear_samples", "fit", "save_ball",
                        "select_model", "analogue_gain"}
             if action not in allowed:
                 raise ValueError("Unknown action")
-            if action == "thresholds":
-                data = {"thresholds": validate_thresholds(data.get("thresholds"))}
             self.jobs.put_nowait((action, copy.deepcopy(data), token, self.lease.cancel))
             return {"queued": True}
 
@@ -404,7 +400,6 @@ class Dashboard:
                 self.notify(f"{action}: {exc}", error=True)
 
     def _edit(self, action, data):
-        goal_path = self.root / "goal_thresholds.json"
         if action == "select_model":
             model_id = data.get("model")
             if model_id not in {model["id"] for model in self.model_options}:
@@ -421,17 +416,6 @@ class Dashboard:
             self.camera.picam2.set_controls({"AnalogueGain": gain})
             self.analogue_gain = gain
             self.notify(f"Analogue gain set to {gain:g}×")
-        elif action == "thresholds":
-            self.thresholds = data["thresholds"]
-        elif action == "save_goals":
-            save_json(goal_path, self.thresholds)
-            if self.camera is not None:
-                self.camera.goal_detector = OpenCV(self.thresholds)
-            self.notify("Goal thresholds saved")
-        elif action == "revert_goals":
-            self.thresholds = load_thresholds(goal_path)
-        elif action == "default_goals":
-            self.thresholds = copy.deepcopy(DEFAULT_THRESHOLDS)
         elif action in ("sample", "remove_sample", "clear_samples", "fit", "save_ball"):
             self._edit_distance(action, data)
 
@@ -578,19 +562,11 @@ class Dashboard:
                 snap = camera.get_diagnostic_snapshot()
                 if snap is not None:
                     with self.lock:
-                        bounds = copy.deepcopy(self.thresholds)
                         calibration = self.calibration
                         bot_calibration = self.bot_calibration
                     frame = snap["frame"]
                     overlay, detections = scene(frame, snap["ball"], snap["bots"], calibration, bot_calibration)
-                    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                    detector = OpenCV(bounds)
-                    blue, yellow = detector.mask(hsv, True), detector.mask(hsv, False)
-                    goals = overlay.copy()
-                    for is_blue, colour in ((True, (255, 160, 0)), (False, (0, 255, 255))):
-                        cv2.drawContours(goals, detector.process_image(hsv, is_blue), -1, colour, 2)
-                    streams = {"camera": encode(overlay), "raw": encode(frame),
-                               "blue": encode(blue), "yellow": encode(yellow), "goals": encode(goals)}
+                    streams = {"camera": encode(overlay), "raw": encode(frame)}
                     with self.condition:
                         self.latest = snap
                         self.detections = detections

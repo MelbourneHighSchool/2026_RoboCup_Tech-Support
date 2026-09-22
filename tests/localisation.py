@@ -23,6 +23,7 @@ from lib.localisation_motion import (
     close_motion_capture,
     configure_motion,
     feed_timed_motion,
+    record_diagnostic_event,
     record_floor,
 )
 from lib.localisation_service import (
@@ -70,6 +71,11 @@ def parse_args():
         action="store_true",
         help="Disable motors; only print/stream localized pose.",
     )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        help="Stop a --no-move recording after this many seconds of valid initial localisation.",
+    )
     odometry_mode = parser.add_mutually_exclusive_group()
     odometry_mode.add_argument(
         "--raw-odometry", dest="raw_odometry", action="store_true", default=True,
@@ -94,6 +100,11 @@ def parse_args():
         parser.error("--motion-noise must be finite and nonnegative")
     if not math.isfinite(args.max_speed) or not 0 < args.max_speed <= SPEED_LIMIT_MM_S:
         parser.error("--max-speed must be greater than zero and at most 2000 mm/s")
+    if args.duration is not None:
+        if not args.no_move:
+            parser.error("--duration is only supported with --no-move")
+        if not math.isfinite(args.duration) or not 0 < args.duration <= 3600:
+            parser.error("--duration must be greater than zero and at most 3600 seconds")
     return args
 
 
@@ -434,10 +445,20 @@ def monitor_pose(
     last_scan_sequence=0,
     stream_enabled=False,
     send_log_module=None,
+    duration_s=None,
 ):
     """Print and optionally stream localized pose without commanding motors."""
     last_status_print = 0.0
-    while True:
+    started = time.monotonic()
+    record_diagnostic_event(
+        lidar_module,
+        "phase",
+        event="start",
+        name="stationary",
+        duration_s=duration_s,
+        command_speed_mm_s=0,
+    )
+    while duration_s is None or time.monotonic() - started < duration_s:
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
         last_pose_time, odometry = predict_odometry(
@@ -456,6 +477,16 @@ def monitor_pose(
 
         if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
             print_localisation_status(lidar_module, odometry)
+            record_diagnostic_event(
+                lidar_module,
+                "live",
+                phase="stationary",
+                state={
+                    "pose": list(lidar_module.get_coordinates_info()),
+                    "deskew": lidar_module.get_deskew_status(),
+                    "odometry": vars(odometry),
+                },
+            )
             last_status_print = now
 
         pose = get_position(lidar_module)
@@ -473,6 +504,12 @@ def monitor_pose(
         lidar_velocity.update(current_x, current_y, yaw, now)
         stream_pose(stream_enabled, send_log_module, current_x, current_y, yaw)
         time.sleep(LOOP_DELAY_SECONDS)
+    record_diagnostic_event(
+        lidar_module,
+        "phase",
+        event="end",
+        name="stationary",
+    )
 
 
 def main():
@@ -558,6 +595,7 @@ def main():
                 last_scan_sequence,
                 stream_enabled=args.stream,
                 send_log_module=send_log_module,
+                duration_s=args.duration,
             )
         else:
             print(

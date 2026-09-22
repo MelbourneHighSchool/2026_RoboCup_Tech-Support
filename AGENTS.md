@@ -138,6 +138,19 @@ YOLO26’s end2end TopK head is unsupported on Hailo. `compile_hailo.py` cuts at
 
 ## Striker ball-hiding hysteresis (`striker.py`)
 
+**Problem:** A blocker can make the captured-ball striker alternate clockwise and anticlockwise even with stable bot coordinates. `main.py` places the captured ball 100 mm ahead of the current yaw, so rotation changes the shot geometry. `goal_shot_aim()` selects the first valid candidate anew each call, and `striker()` switches immediately between aiming and the no-shot headings (120/240 degrees), with no shot-selection hysteresis. For example, robot (1800, 1040), enemy (2050, 1040): yaw 105 degrees gives no shot and target 120; yaw 110 gives a shot and target approximately -44.7, reversing the yaw error. Existing `steering_state` only remembers ball hiding. Fixed with per-robot `ShotState` passed by main and simulator, separate from the boolean hiding/log field. Plan lanes from robot centre so rotation of a captured ball cannot toggle their availability; retain the selected valid angle. Hold an invalid aim for 0.3 seconds before repositioning, and require an open lane for 0.4 seconds before resuming aim. Reposition toward own goal and centre Y with rotation 0. Actual ball/yaw kick clearance is checked every frame, including during the aim hold. Reset commitment on capture loss, missing ball, hiding, pause or role change. Regression tests: `tests/test_striker_commitment.py`.
+
+**Diagnostic — shots into the goalie:** The simulator supplies enemy positions,
+including the goalie, in the strategy's team frame. However, the
+`elif not shot_possible` fallback in `striker()` kicks unconditionally when the
+robot is within `CLOSE_SHOOTING_Y_DIST` of centre Y and yaw is within
+`YAW_CORRECT_THRESHOLD` of zero. This bypasses `kick_direction_scores()` even
+when the goalie caused every candidate shot to be rejected. Reproduce with
+robot `(1670, 910)`, yaw `0`, captured ball `(1800, 910)`, and enemy
+`(1980, 910)`: aim returns `(None, False)` but striker returns `kick=True`.
+The fallback now repositions on no valid shot; all kicks require actual
+ball/yaw path clearance.
+
 **Problem:** With separate `BALL_HIDING_START_DIST` / `BALL_HIDING_END_DIST`, a naive `if dist < END: aim elif dist >= START: hide` leaves a dead zone between them. Crossing that band (or fluttering near either threshold) snapped `rotation` between wall-facing (`120`/`240`) and `0` / goal heading, so the bot oscillated CW/CCW.
 
 **Solution:** Persist hiding in the returned `steering_state` bool. Enter hide when `dist >= START`; stay hidden until `dist < END`, then aim. `main.py` / `simulate.py` must feed the previous steering flag back in each call.
@@ -393,9 +406,9 @@ yaw sampling sigma is 5 degrees, superseding the older 45-degree overview above.
 
 ## Camera mount bearing offset
 
-**Problem:** Camera mounting correction was duplicated between live detection and calibration readouts, while goal alignment assumed image-left was forward. The raw bearing helper subtracts 90 degrees from image `atan2`, so removing the old 270-degree offset does not make image-up forward.
+**Problem:** Camera mounting correction was duplicated between live detection and calibration readouts. The raw bearing helper subtracts 90 degrees from image `atan2`, so removing the old 270-degree offset does not make image-up forward.
 
-**Solution:** `camera_bearing_offset_deg` in `config.txt` defaults to 270 (image-left forward); use 180 for image-up forward. `Camera` loads it once for ball/bot bearings and the goal-alignment ray, and calibration readouts use the same setting. Restart camera/game/dashboard after changing it. `load_camera_bearing_offset()` reads only this setting without importing Pi GPIO dependencies, preserving standalone desktop calibration/model tools and the legacy default when config is absent.
+**Solution:** `camera_bearing_offset_deg` in `config.txt` defaults to 270 (image-left forward); use 180 for image-up forward. `Camera` loads it once for ball/bot bearings, and calibration readouts use the same setting. Restart camera/game/dashboard after changing it. `load_camera_bearing_offset()` reads only this setting without importing Pi GPIO dependencies, preserving standalone desktop calibration/model tools and the legacy default when config is absent.
 
 ## Dashboard polling measurements
 

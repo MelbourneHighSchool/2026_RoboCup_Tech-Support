@@ -160,8 +160,7 @@ def inference_scene_measurement_returns_ball_and_bots_atomically():
     camera.detection_callback = lambda _event: camera._infer_stop.set()
     camera._infer_loop()
 
-    frame_id, bearing, distance, bot_measurements, lined_up = camera.get_scene_measurement()
-    assert lined_up is False
+    frame_id, bearing, distance, bot_measurements = camera.get_scene_measurement()
     assert frame_id == 1
     assert bearing is not None
     assert distance == pytest.approx(0.0)
@@ -267,7 +266,7 @@ def inference_diagnostics_keep_source_pixels_and_all_boxes():
     (270, (0, 4), (4, 0)),
     (180, (4, 0), (8, 4)),
 ])
-def test_camera_mount_bearings_and_goal_alignment(offset, forward, right):
+def test_camera_mount_bearings(offset, forward, right):
     module = _import_camera_without_picamera_hardware()
     camera = _make_camera_for_infer(module)
     camera.camera_bearing_offset_deg = offset
@@ -276,11 +275,6 @@ def test_camera_mount_bearings_and_goal_alignment(offset, forward, right):
         for target in ("ball", "bot"):
             bearing, _ = camera._polar_from_detection(detection, 8, 8, target=target)
             assert bearing % 360 == pytest.approx(expected)
-    for point, expected in ((forward, True), (right, False)):
-        x, y = point
-        contour = np.array([[[x-1, y-1]], [[x+1, y-1]],
-                            [[x+1, y+1]], [[x-1, y+1]]], dtype=np.int32)
-        assert module._goal_lined_up([contour], 8, 8, offset) is expected
 
 
 def test_camera_offset_config(tmp_path):

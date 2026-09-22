@@ -22,7 +22,7 @@ from lib.session_replay import (
     game_event_tokens,
     load_recorded_session,
 )
-from striker import striker
+from striker import ShotState, striker
 from tests.bot import bot
 
 parser = argparse.ArgumentParser(
@@ -374,6 +374,7 @@ class Bot:
     velocity_x: float = 0.0
     velocity_y: float = 0.0
     steering: bool = False
+    shot_state: ShotState = field(default_factory=ShotState)
 
     def __post_init__(self):
         self.current_color = self.base_color
@@ -754,48 +755,6 @@ def ball_visible_from(observer, ball_x, ball_y, bots):
                 return False
     return True
 
-
-def goal_lined_up(observer, bots):
-    """Whether the forward ray reaches enemy goal colour before solid geometry."""
-    if observer.base_color == yellow:
-        goal_min_x, goal_max_x = GOAL_LEFT_BACK_X, GOAL_LEFT_FRONT_X
-    else:
-        goal_min_x, goal_max_x = GOAL_RIGHT_FRONT_X, GOAL_RIGHT_BACK_X
-    angle = math.radians(observer.yaw)
-    dx, dy = math.cos(angle), math.sin(angle)
-    # Intersect the ray with the coloured goal rectangle using axis slabs.
-    near, far = 0.0, math.inf
-    for origin, direction, lower, upper in (
-        (observer.x, dx, goal_min_x, goal_max_x),
-        (observer.y, dy, GOAL_TOP_Y, GOAL_BOTTOM_Y),
-    ):
-        if abs(direction) <= EPSILON:
-            if not lower <= origin <= upper:
-                return False
-            continue
-        entry, exit_distance = sorted(((lower - origin) / direction, (upper - origin) / direction))
-        near, far = max(near, entry), min(far, exit_distance)
-        if near > far:
-            return False
-    start = (observer.x, observer.y)
-    end = (observer.x + near * dx, observer.y + near * dy)
-    # Goal side/back walls are solid even where they overlap the goal colour.
-    walls = list(GOAL_LINES) + [
-        ((0, 0), (PITCH_WIDTH, 0), 0),
-        ((PITCH_WIDTH, 0), (PITCH_WIDTH, PITCH_HEIGHT), 0),
-        ((PITCH_WIDTH, PITCH_HEIGHT), (0, PITCH_HEIGHT), 0),
-        ((0, PITCH_HEIGHT), (0, 0), 0),
-    ]
-    for wall_start, wall_end, width in walls:
-        if segment_segment_distance(start, end, wall_start, wall_end) <= width / 2 + EPSILON:
-            return False
-    for other in bots:
-        if other is observer:
-            continue
-        distance, _ = point_to_line_segment_distance(other.x, other.y, *start, *end)
-        if distance <= BOT_RADIUS + EPSILON:
-            return False
-    return True
 
 
 def check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
@@ -1899,7 +1858,6 @@ else:
                     manual_keys = pygame.key.get_pressed()
                 direction, speed, rotation, kick_state = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
-                lined_up = goal_lined_up(bot, bots)
                 controller_x = bot.x
                 controller_y = bot.y
                 controller_yaw = bot.yaw
@@ -1951,7 +1909,7 @@ else:
                         bot.steering,
                         friendly_bot_positions=controller_friendly_bot_positions,
                         enemy_bot_positions=controller_enemy_bot_positions,
-                        lined_up=lined_up,
+                        **({"shot_state": bot.shot_state} if bot.controller is striker else {}),
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)
@@ -1967,7 +1925,6 @@ else:
                         ball_captured,
                         friendly_bot_positions=controller_friendly_bot_positions,
                         enemy_bot_positions=controller_enemy_bot_positions,
-                        lined_up=lined_up,
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)

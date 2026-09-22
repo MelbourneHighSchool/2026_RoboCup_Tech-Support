@@ -29,7 +29,7 @@ def main():
 
     from lib import lidar
     from lib.config import load_config
-    from lib.localisation_motion import close_motion_capture
+    from lib.localisation_motion import close_motion_capture, record_diagnostic_event
     from lib.localisation_service import (
         LidarVelocityEstimator,
         LocalisationSession,
@@ -67,6 +67,16 @@ def main():
                            ("stationary", 0, 3)])
         for label, sign, duration in phases:
             print(f"{label}: {duration:g}s; yaw wheel limit {args.motor_rpm:g} RPM")
+            record_diagnostic_event(
+                lidar,
+                "phase",
+                event="start",
+                name=label,
+                direction_sign=sign,
+                duration_s=duration,
+                command_speed_mm_s=0,
+                yaw_wheel_limit_rpm=args.motor_rpm,
+            )
             end = time.monotonic() + duration
             last_print = 0
             while time.monotonic() < end:
@@ -84,13 +94,43 @@ def main():
                           f"scan={deskew.get('reason')} residual="
                           f"{deskew.get('raw_residual_mm', -1):.1f}->"
                           f"{deskew.get('corrected_residual_mm', -1):.1f} mm")
+                    record_diagnostic_event(
+                        lidar,
+                        "live",
+                        phase=label,
+                        direction_sign=sign,
+                        gyro_deg_s=rate,
+                        state=state,
+                        timing=hardware.timing_diagnostics(),
+                    )
                     last_print = now
                 time.sleep(0.02)
+            hardware.move(0, 0, yaw, 0.0, 0)
+            record_diagnostic_event(
+                lidar,
+                "phase",
+                event="end",
+                name=label,
+                direction_sign=sign,
+            )
     except KeyboardInterrupt:
         print("Stopping rotation test.")
     finally:
         try:
             if hardware is not None:
+                try:
+                    hardware.move(0, 0, 0, 0, 0)
+                    record_diagnostic_event(
+                        lidar,
+                        "command",
+                        phase="cleanup",
+                        direction_deg=0,
+                        speed_mm_s=0,
+                        rotation_deg=0,
+                        rotation_strength=0,
+                    )
+                except Exception as exc:
+                    print(f"Warning: zero command before stop failed: {exc}")
                 hardware.stop()
         finally:
             try:
