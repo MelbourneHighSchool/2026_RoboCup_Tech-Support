@@ -263,7 +263,7 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 
 **Problem:** Bot projection and dashboard overlays reused the ball radial-distance polynomial, even though object box centres need different distance fits.
 
-**Solution:** `Camera` loads `ball_distance_calibration.json` and `bot_distance_calibration.json` independently at the active camera resolution. Missing/invalid bot calibration yields bearings but no bot distances, never the ball fit. In dashboard **Distances**, select Ball or Bot to edit separate samples and fits; bot sampling requires exactly one detected bot and measures centre-to-centre distance. Saving backs up and reloads only the selected class via `reload_distance_calibration(path, target="bot")` (default target remains ball).
+**Solution:** `Camera` loads `ball_distance_calibration.json` and `bot_distance_calibration.json` independently at the active camera resolution. Missing/invalid bot calibration yields bearings but no bot distances, never the ball fit. In dashboard **Distances**, select Ball or Bot to edit separate samples and fits; bot sampling measures centre-to-centre distance using an explicitly selected detection in a frozen frame (Freeze & select bot). Saving backs up and reloads only the selected class via `reload_distance_calibration(path, target="bot")` (default target remains ball).
 
 ## LIDAR acquisition timestamps and slip uncertainty
 
@@ -425,3 +425,9 @@ to microseconds. `timing_diagnostics()` supplies native counters/timings;
 changes and elapsed time. Yaw and gyro counts are separate. Receipt ages are not
 sensor latency; PCB durations include bus-lock waiting, while motor/IMU/odometry
 wait and service durations are separate. Rebuild the hardware extension on the Pi.
+
+## Selecting a bot for distance samples
+
+**Problem:** The camera detects its own robot as well as the calibration target. Detection indices belong to individual inference frames, so using a selected index against the latest live snapshot could sample a different bot.
+
+**Solution:** Dashboard `freeze(for_bots=True)` retains the source pixels and a deep copy of their bot detections in the bounded frozen-frame cache, rejecting stale captures. Bot samples submit `frozen_id` and `bot_index`; the backend reads only that retained detection, validates the resolution, and rejects expired frames or invalid selections. Freshness is checked when freezing, allowing time to select and measure afterwards. The UI returns to live after submitting each sample. Pixel picking still uses the same unannotated source via `frozen_frame()`.

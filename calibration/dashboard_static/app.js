@@ -7,6 +7,7 @@ let token = null, state = null, tab = 'camera', frozen = null;
 let messageUntil = 0, lastEvent = '', samplesSignature = '', fitSignature = '';
 let modelsSignature = '';
 let lineDirty = false, lineLoaded = false, lineEditVersion = 0;
+let botFrame = null, botImage = null, selectedBot = null, botFreezePending = false;
 const fmt = (v, digits = 1) => v == null ? 'unavailable' : Number(v).toFixed(digits);
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function message(text) { $('message').textContent = text; messageUntil = Date.now() + 10000; }
@@ -122,10 +123,87 @@ for (const button of document.querySelectorAll('.arm')) button.onclick = async (
 const distanceTarget = () => ({target:$('distanceTarget').value});
 $('distanceTarget').onchange = () => {
   $('captured').disabled = $('distanceTarget').value === 'bot';
+  resetBotSelection();
   samplesSignature = ''; fitSignature = '';
   if (state) render(state);
 };
-handle('sample', 'sample', () => ({...distanceTarget(), distance:$('distance').value, captured:$('captured').checked}));
+$('sample').onclick = async () => {
+  try {
+    const data = {...distanceTarget(), distance:$('distance').value, captured:$('captured').checked};
+    if (data.target === 'bot') {
+      if (!botFrame || selectedBot === null) throw new Error('Freeze a frame and select a bot first.');
+      data.frozen_id = botFrame.id; data.bot_index = selectedBot;
+    }
+    await api('sample', data);
+    if (data.target === 'bot') resetBotSelection();
+  } catch (e) { message(e.message); }
+};
+function updateBotSelection() {
+  const isBot = $('distanceTarget').value === 'bot';
+  $('botSelection').hidden = !isBot;
+  $('botPicker').hidden = !botFrame;
+  $('distancePreview').hidden = !!botFrame;
+  $('liveBots').hidden = !botFrame;
+  $('freezeBots').disabled = botFreezePending;
+  $('sample').disabled = !token || (isBot && (!botFrame || selectedBot === null || botFreezePending));
+}
+function resetBotSelection() {
+  botFrame = null; botImage = null; selectedBot = null;
+  $('botSelectionHelp').textContent = 'Freeze a frame, then select the other bot instead of your own robot.';
+  updateBotSelection(); streams();
+}
+function drawBotSelection() {
+  if (!botFrame || !botImage) return;
+  const canvas = $('botFrame'), c = canvas.getContext('2d');
+  c.drawImage(botImage, 0, 0);
+  c.font = `${Math.max(16, canvas.width / 35)}px sans-serif`;
+  botFrame.bots.forEach((bot, index) => {
+    const [x,y,w,h] = bot.bbox;
+    c.strokeStyle = c.fillStyle = index === selectedBot ? '#6ce3bd' : '#ffbd82';
+    c.lineWidth = index === selectedBot ? 5 : 2;
+    c.strokeRect(x,y,w,h);
+    c.fillText(`Bot ${index + 1}${index === selectedBot ? ' · selected' : ''}`, Math.max(0,x), Math.max(20,y - 5));
+  });
+}
+function selectBot(index) {
+  selectedBot = index;
+  $('botChoice').value = index === null ? '' : String(index);
+  $('botSelectionHelp').textContent = index === null ? 'Select a numbered bot box or choose below.' :
+    `Bot ${index + 1} selected in frozen frame ${botFrame.frame_id}. Enter its centre-to-centre distance, then capture the sample.`;
+  drawBotSelection(); updateBotSelection();
+}
+$('freezeBots').onclick = async () => {
+  botFreezePending = true; resetBotSelection();
+  try {
+    const snapshot = await api('freeze', {target:'bot'});
+    const img = new Image(); img.src = '/frozen.png?id=' + snapshot.id;
+    await img.decode();
+    if ($('distanceTarget').value !== 'bot') return;
+    botFrame = snapshot; botImage = img;
+    $('botFrame').width = snapshot.width; $('botFrame').height = snapshot.height;
+    const placeholder = new Option('Select a bot…', '');
+    $('botChoice').replaceChildren(placeholder, ...snapshot.bots.map((bot, index) =>
+      new Option(`Bot ${index + 1} · ${fmt(bot.confidence * 100, 0)}% · centre (${bot.centre.map(v => fmt(v, 0)).join(', ')})`, String(index))));
+    selectBot(null); streams();
+  } catch (e) { message(e.message); }
+  finally { botFreezePending = false; updateBotSelection(); }
+};
+$('liveBots').onclick = resetBotSelection;
+$('botChoice').onchange = () => selectBot($('botChoice').value === '' ? null : Number($('botChoice').value));
+$('botFrame').onclick = event => {
+  if (!botFrame) return;
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) / bounds.width * botFrame.width;
+  const y = (event.clientY - bounds.top) / bounds.height * botFrame.height;
+  const hits = botFrame.bots.map((bot,index) => ({bot,index})).filter(({bot}) => {
+    const [bx,by,w,h] = bot.bbox; return x >= bx && x <= bx+w && y >= by && y <= by+h;
+  });
+  if (hits.length === 1) selectBot(hits[0].index);
+  else {
+    selectBot(null);
+    $('botSelectionHelp').textContent = hits.length ? 'These boxes overlap. Choose the bot number below.' : 'Click inside a bot box or choose its number below.';
+  }
+};
 handle('fit', 'fit', distanceTarget); handle('saveBall', 'save_ball', distanceTarget); handle('clearSamples', 'clear_samples', distanceTarget);
 $('localise').onclick = async () => {
   try { await api($('localise').dataset.running === 'true' ? 'stop_localise' : 'localise', Object.fromEntries([...document.querySelectorAll('.poll-rate')].map(el => [el.id, Number(el.value)]))); }
@@ -141,6 +219,7 @@ $('speedSlider').oninput = () => { $('speed').value = $('speedSlider').value; };
 $('speed').oninput = () => { $('speedSlider').value = Math.min(1000, Math.max(0, Number($('speed').value))); };
 function streams() {
   for (const img of document.querySelectorAll('img[data-view]')) {
+    if (img.id === 'distancePreview' && botFrame) { img.removeAttribute('src'); continue; }
     if (img.closest('.panel').id !== tab || (img.id === 'cameraPreview' && frozen)) { if (img.id !== 'cameraPreview' || !frozen) img.removeAttribute('src'); continue; }
     let view = img.dataset.view;
     if (img.id === 'cameraPreview' && $('rawToggle').checked) view = 'raw';
@@ -191,6 +270,7 @@ function render(s) {
   document.querySelectorAll('.control').forEach(e => { e.disabled = !token; });
   $('pcbStart').disabled = !token || !['idle', 'stopped', 'monitoring'].includes(s.hardware.mode) || s.hardware.localisation != null;
   $('pcbStop').disabled = !token || !['pcb', 'queued pcb_start', 'starting pcb_start'].includes(s.hardware.mode);
+  updateBotSelection();
   document.querySelectorAll('.arm').forEach(e => { e.disabled = !token || s.control.armed; });
   $('calibrate').disabled = $('drive').disabled = !token || !s.control.armed;
   $('kick').disabled = !token || !s.control.armed;

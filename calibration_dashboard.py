@@ -148,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise TypeError("Expected JSON object")
             action = self.path.removeprefix("/api/") if self.path.startswith("/api/") else ""
             dashboard = self.server.dashboard
-            result = dashboard.freeze() if action == "freeze" else dashboard.command(
+            result = dashboard.freeze(for_bots=data.get("target") == "bot") if action == "freeze" else dashboard.command(
                 action, data, self.headers.get("X-Control-Token"),
             )
             self.reply(result)

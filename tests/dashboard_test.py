@@ -327,7 +327,9 @@ def test_bot_calibration_is_separate_from_ball(dashboard):
         install_snapshot(dashboard)
         dashboard.latest["bots"] = [detection(radius)]
         dashboard.latest["ball"] = None
-        dashboard._edit("sample", {"target": "bot", "distance": distance, "captured": True})
+        frozen = dashboard.freeze(for_bots=True)
+        dashboard._edit("sample", {"target": "bot", "distance": distance, "captured": True,
+                                   "frozen_id": frozen["id"], "bot_index": 0})
     dashboard._edit("save_ball", {"target": "bot"})
     assert dashboard.camera.target == "bot"
     assert dashboard.camera.loaded["capture_calibration"]["sample_count"] == 0
@@ -338,11 +340,59 @@ def test_bot_calibration_is_separate_from_ball(dashboard):
     assert dashboard.bot_calibration["samples"] == dashboard.bot_samples
     assert dashboard.state()["bot_samples"] == dashboard.bot_samples
     dashboard.latest["bots"] *= 2
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="select a bot"):
         dashboard._edit("sample", {"target": "bot", "distance": 500})
     dashboard._edit("clear_samples", {"target": "bot"})
     assert dashboard.bot_samples == []
     assert dashboard.samples == original_ball_samples
+
+
+def test_bot_sample_uses_selected_frozen_detection_despite_live_changes(dashboard):
+    install_snapshot(dashboard)
+    dashboard.latest["bots"] = [detection(1), detection(9)]
+    dashboard.latest["bots"][1].update(centre=(12, 10), bbox=(9, 8, 6, 4))
+    frozen = dashboard.freeze(for_bots=True)
+    assert [bot["radial_pixels"] for bot in frozen["bots"]] == [1, 9]
+    # Both the live detections and response may change without changing the saved source.
+    dashboard.latest["bots"][1]["radial_pixels"] = 3
+    dashboard.latest["bots"].reverse()
+    dashboard.latest["timestamp"] -= 2
+    frozen["bots"][1]["radial_pixels"] = 100
+    dashboard._edit("sample", {"target": "bot", "distance": 750,
+                               "frozen_id": frozen["id"], "bot_index": 1})
+    assert dashboard.bot_samples == [{"distance_mm": 750, "radial_pixels": 9,
+                                      "centre_x": 12, "centre_y": 10,
+                                      "bounding_box_area": 24, "captured": False}]
+    assert dashboard.samples == []
+
+
+def test_bot_selection_requires_fresh_capture_and_valid_frozen_selection(dashboard):
+    install_snapshot(dashboard)
+    dashboard.latest["timestamp"] -= 1
+    with pytest.raises(ValueError, match="fresh"):
+        dashboard.freeze(for_bots=True)
+    install_snapshot(dashboard)
+    dashboard.latest["bots"] = []
+    with pytest.raises(ValueError, match="No detected bots"):
+        dashboard.freeze(for_bots=True)
+    install_snapshot(dashboard)
+    frozen = dashboard.freeze(for_bots=True)
+    data = {"target": "bot", "distance": 500, "frozen_id": frozen["id"]}
+    for index in (None, -1, 1, True, "0"):
+        with pytest.raises(ValueError, match="Select a bot"):
+            dashboard._edit("sample", {**data, "bot_index": index})
+    dashboard.sample_resolution = [32, 32]
+    with pytest.raises(ValueError, match="resolution changed"):
+        dashboard._edit("sample", {**data, "bot_index": 0})
+    dashboard.sample_resolution = [16, 16]
+    for _ in range(8):
+        dashboard.freeze()
+    with pytest.raises(ValueError, match="Freeze a fresh frame"):
+        dashboard._edit("sample", {**data, "bot_index": 0})
+    pixel_frame = dashboard.freeze()
+    with pytest.raises(ValueError, match="Freeze a fresh frame"):
+        dashboard._edit("sample", {**data, "frozen_id": pixel_frame["id"], "bot_index": 0})
+    assert dashboard.bot_samples == []
 
 
 def test_scene_uses_separate_distance_models(dashboard):
@@ -645,9 +695,10 @@ def test_http_origin_control_and_shared_previews(dashboard):
     thread.start()
     host, port = server.server_address
     origin = f"http://{host}:{port}"
-    def post(action, headers):
+    def post(action, headers, data=None):
         connection = http.client.HTTPConnection(host, port, timeout=2)
-        connection.request("POST", "/api/" + action, "{}", {"Content-Type":"application/json", **headers})
+        connection.request("POST", "/api/" + action, json.dumps(data or {}),
+                           {"Content-Type":"application/json", **headers})
         response = connection.getresponse()
         result = response.status, json.loads(response.read())
         connection.close()
@@ -668,6 +719,16 @@ def test_http_origin_control_and_shared_previews(dashboard):
             streams.append(connection)
         # Neither client consumes further output; API calls still complete.
         assert post("freeze", {"Origin":origin})[0] == 200
+        status, frozen = post("freeze", {"Origin":origin}, {"target": "bot"})
+        assert status == 200
+        assert frozen["bots"][0]["radial_pixels"] == 8
+        connection = http.client.HTTPConnection(host, port, timeout=2)
+        connection.request("GET", "/frozen.png?id=" + frozen["id"])
+        response = connection.getresponse()
+        assert response.status == 200
+        frame = cv2.imdecode(np.frombuffer(response.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
+        connection.close()
+        np.testing.assert_array_equal(frame, dashboard.latest["frame"])
         assert dashboard.stream_sequence == 1
     finally:
         dashboard.closing.set()

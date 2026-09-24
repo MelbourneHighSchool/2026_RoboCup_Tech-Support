@@ -427,15 +427,20 @@ class Dashboard:
         samples = getattr(self, prefix + "samples")
         fit = getattr(self, prefix + "fit")
         if action == "sample":
-            snap = self.latest
-            if snap is None or time.monotonic() - snap["timestamp"] > 0.5:
-                raise ValueError("A fresh detection is required")
             if target == "bot":
-                bots = snap.get("bots", [])
-                if len(bots) != 1:
-                    raise ValueError("Keep exactly one detected bot in view when sampling")
-                det = bots[0]
+                snap = self.frozen.get(data.get("frozen_id"))
+                if snap is None or not snap["for_bots"]:
+                    raise ValueError("Freeze a fresh frame and select a bot before sampling")
+                if list(snap["resolution"]) != list(self.sample_resolution or []):
+                    raise ValueError("Camera resolution changed; freeze a new frame")
+                index = data.get("bot_index")
+                if type(index) is not int or not 0 <= index < len(snap["bots"]):
+                    raise ValueError("Select a bot in the frozen frame")
+                det = snap["bots"][index]
             else:
+                snap = self.latest
+                if snap is None or time.monotonic() - snap["timestamp"] > 0.5:
+                    raise ValueError("A fresh detection is required")
                 det = snap["ball"]
                 if det is None:
                     raise ValueError("A fresh detected ball is required")
@@ -485,22 +490,31 @@ class Dashboard:
         setattr(self, prefix + "samples", samples)
         setattr(self, prefix + "fit", fit)
 
-    def freeze(self):
+    def freeze(self, *, for_bots=False):
         with self.lock:
             if self.latest is None:
                 raise ValueError("No camera frame available")
+            if for_bots:
+                if time.monotonic() - self.latest["timestamp"] > 0.5:
+                    raise ValueError("A fresh detection is required")
+                if not self.latest.get("bots"):
+                    raise ValueError("No detected bots; try again with a bot in view")
             key = secrets.token_hex(12)
-            self.frozen[key] = self.latest["frame"].copy()
+            frame = self.latest["frame"].copy()
+            height, width = frame.shape[:2]
+            bots = copy.deepcopy(self.latest.get("bots", []))
+            self.frozen[key] = {"frame": frame, "bots": bots, "for_bots": for_bots,
+                                "resolution": [width, height]}
             while len(self.frozen) > 8:
                 self.frozen.popitem(last=False)
-            height, width = self.frozen[key].shape[:2]
-            return {"id": key, "width": width, "height": height, "frame_id": self.latest["frame_id"]}
+            return {"id": key, "width": width, "height": height, "frame_id": self.latest["frame_id"],
+                    "bots": copy.deepcopy(bots) if for_bots else []}
 
     def frozen_frame(self, key):
         with self.lock:
             if key not in self.frozen:
                 raise ValueError("Frozen frame expired; freeze again")
-            return self.frozen[key]
+            return self.frozen[key]["frame"]
 
     def _camera_loop(self):
         if self.camera_factory is None:

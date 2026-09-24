@@ -3,3 +3,5 @@ select{display:block;width:100%;padding:9px 12px;margin-top:5px;background:#0d19
 #sensorRing{display:block;width:100%;max-width:650px;margin:auto;background:#101b23;border-radius:6px;font:16px system-ui,sans-serif}.sensor-readings{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.sensor-reading{border-left:7px solid #50616e;padding:8px 12px;background:#101b23;font:14px ui-monospace,monospace}#lineSensors p,#lineSensors label{font-size:14px}
 
 #joystick{position:relative;width:220px;height:220px;border:2px solid var(--line);border-radius:50%;margin:24px auto;touch-action:none;background:#0d1922;user-select:none}#joystickKnob{position:absolute;left:calc(50% - 25px);top:calc(50% - 25px);width:50px;height:50px;border-radius:50%;background:var(--accent);pointer-events:none}
+
+#distancePreview[hidden]{display:none}#botFrame{cursor:crosshair}
