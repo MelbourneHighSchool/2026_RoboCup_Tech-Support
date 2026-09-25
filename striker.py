@@ -418,11 +418,11 @@ def striker(
     # ±80 would clear goal rotation and oscillate against facing forward (rotation=0).
     if not ball_captured and dist < 300:
         if -10 < direction < 10:
-            speed = 700
+            speed = 900
         elif 0 < direction < 180:
-            offset = 70
+            offset = 60
         else:
-            offset = -70
+            offset = -60
     elif dist > 500:
         speed = 1200
         dribbler = 0
