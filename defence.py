@@ -115,6 +115,7 @@ def defence(
     ball_x,
     ball_y,
     ball_captured=False,
+    last_ball_y=None,
     state=None,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
@@ -129,10 +130,10 @@ def defence(
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
         
-        target_x = 1515
-        if y_pos < 850:
+        target_x = 815
+        if last_ball_y < 850:
             target_y = 1210
-        elif y_pos > 950:
+        elif last_ball_y > 950:
             target_y = 610
         else:
             target_y = 910
