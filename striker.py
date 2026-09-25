@@ -4,13 +4,8 @@ from dataclasses import dataclass
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
-# Coordinates of the centre of the goal zone, which the goalie uses for blocking.
-CYAN_GOAL_CENTRE_X = 400
-YELLOW_GOAL_CENTRE_X = 1980
 # Y is shared between goals because it is the same
 GOAL_CENTRE_Y = 910
-# Coordinates of the back of the goal zone, which defence uses for aiming.
-YELLOW_GOAL_BACK_X = 226
 GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
@@ -52,8 +47,6 @@ BALL_HIDING_END_DIST = 600
 # Distance to goal (mm) at which to aim and shoot when ball hiding is disabled.
 BALL_HIDING_DISABLED_END_DIST = 1000
 
-CLOSE_SHOOTING_Y_DIST = 100
-
 BALL_RADIUS = 21 # mm, radius of the ball
 ROBOT_RADIUS = 110 # mm, radius used for shot clearance around enemy bot centres
 BOUNDARY_STOP_MARGIN = 15 # mm reserved for braking/localisation error
@@ -62,21 +55,12 @@ SIDE_WALL_CLEARANCE_DEG = 5
 # When no shot/rebound is possible, pull this far toward own goal while drifting to mid Y.
 SHOT_REPOSITION_PULL_X = 400
 
-YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
-OWN_GOAL_PREVENTION_OFFSET = 10 # deg, how much to offset the direction to the ball when preventing own goals.
-
-CAMERA_PORT = 8000
-I2C_ADDRESSES = [29, 27, 26, 25]
-
-BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
-
-
 def wrap_angle_deg(angle):
+    """Wraps angles between -180 and 180 degrees."""
     return ((angle + 180) % 360) - 180
 
-
 def enemy_bots_ahead(bot_x, enemy_bot_positions):
-    """Return whether no enemy bot centre is inside the enemy goal box."""
+    """Checks if any enemy bot is ahead of the bot."""
     return not any(
         enemy_bot_x > bot_x
         for enemy_bot_x, *_ in enemy_bot_positions or ()

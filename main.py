@@ -15,6 +15,7 @@ from lib.hardware_controller import (
 import defence
 import striker
 from lib import lidar, switch
+from lib.ball_possession import BallPossessionTracker, ball_is_near_bot
 from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
@@ -450,6 +451,8 @@ try:
     last_ball_y = None
     last_camera_frame_id = camera.frame_id
     last_camera_bot_positions = []
+    ball_possession_tracker = BallPossessionTracker()
+    self_ball_candidate = False
 
     fps_monitor = None
     if args.fps:
@@ -591,6 +594,17 @@ try:
                 ball_x = None
                 ball_y = None
                 camera_bot_positions = last_camera_bot_positions
+            observed_ball_position = (
+                (ball_x, ball_y)
+                if has_new_camera_frame and ball_x is not None and ball_y is not None
+                else None
+            )
+            if observed_ball_position is not None:
+                self_ball_candidate = ball_is_near_bot(
+                    observed_ball_position, (x_pos, y_pos)
+                )
+            elif not camera_healthy:
+                self_ball_candidate = False
             now = time.time()
             if ball_x is not None and ball_y is not None:
                 dt = now - last_ball_update
@@ -620,16 +634,6 @@ try:
 
             peer_msg = None
             if peer is not None:
-                peer.send(
-                    {
-                        "x": x_pos,
-                        "y": y_pos,
-                        "yaw": yaw,
-                        "mode": bot_mode.name,
-                        "ball_x": ball_x,
-                        "ball_y": ball_y,
-                    }
-                )
                 peer_msg = peer.receive()
             peer_xy = None
             if (
@@ -646,6 +650,30 @@ try:
                 (x_pos, y_pos),
                 peer_xy=peer_xy,
             )
+            if ball_captured:
+                ball_possession_tracker.clear()
+                carried_ball_position = None
+            else:
+                carried_ball_position = ball_possession_tracker.update(
+                    observed_ball_position,
+                    enemy_bot_positions,
+                    now,
+                    new_camera_frame=has_new_camera_frame,
+                    camera_healthy=camera_healthy,
+                )
+            ball_prediction_timed_out = (
+                observed_ball_position is None
+                and last_ball_x is not None
+                and now - last_ball_update >= BALL_TIMEOUT
+            )
+            if not ball_captured and ball_prediction_timed_out:
+                if self_ball_candidate:
+                    ball_captured = True
+                    ball_possession_tracker.clear()
+                    ball_x = x_pos + 100 * math.cos(math.radians(yaw))
+                    ball_y = y_pos + 100 * math.sin(math.radians(yaw))
+                elif carried_ball_position is not None:
+                    ball_x, ball_y = carried_ball_position
             if (
                 ball_x is None
                 and ball_y is None
@@ -655,6 +683,17 @@ try:
             ):
                 ball_x = peer_msg["ball_x"]
                 ball_y = peer_msg["ball_y"]
+            if peer is not None:
+                peer.send(
+                    {
+                        "x": x_pos,
+                        "y": y_pos,
+                        "yaw": yaw,
+                        "mode": bot_mode.name,
+                        "ball_x": ball_x,
+                        "ball_y": ball_y,
+                    }
+                )
 
             if bot_mode == BotMode.DEFENCE:
                 direction, speed, rotation, controller_state, kick, dribbler = defence.defence(

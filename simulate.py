@@ -15,6 +15,11 @@ import pygame
 import websockets
 
 from defence import defence, goalie
+from lib.ball_possession import (
+    BallExtrapolator,
+    BallPossessionTracker,
+    ball_is_near_bot,
+)
 from lib.controller_state import decode_state
 from lib.session_replay import (
     EventTimeline,
@@ -77,6 +82,14 @@ parser.add_argument(
     action="store_true",
     help="Hide the ball from bots whose centre-to-ball ray hits another bot's black wall.",
 )
+parser.add_argument(
+    "--vision-ball-possession",
+    action="store_true",
+    help=(
+        "With --vision, infer a hidden ball at the position of a nearby tracked "
+        "enemy bot."
+    ),
+)
 
 parser.add_argument(
     "--team1",
@@ -91,6 +104,8 @@ parser.add_argument(
     help="Space-separated roles (e.g., d d) for Team 2 (cyan, yaw 180).",
 )
 args = parser.parse_args()
+if args.vision_ball_possession and not args.vision:
+    parser.error("--vision-ball-possession requires --vision")
 
 lines = []
 session_provided = args.log_file is not None and Path(args.log_file).is_dir()
@@ -225,6 +240,7 @@ clock = pygame.time.Clock()
 MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
 FPS = 120
 LOG_FPS = 30  # Matches main.py --save-log recording rate
+VISION_BALL_TIMEOUT_S = 0.5
 
 BOT_RADIUS = ROBOT_RADIUS
 BOT_MIN_X = BOT_RADIUS
@@ -375,6 +391,13 @@ class Bot:
     velocity_x: float = 0.0
     velocity_y: float = 0.0
     state: object = None
+    ball_possession_tracker: BallPossessionTracker = field(
+        default_factory=BallPossessionTracker
+    )
+    ball_extrapolator: BallExtrapolator = field(
+        default_factory=lambda: BallExtrapolator(VISION_BALL_TIMEOUT_S)
+    )
+    self_ball_candidate: bool = False
 
     def __post_init__(self):
         self.current_color = self.base_color
@@ -1848,6 +1871,7 @@ else:
             ball_captured = ball_on_field and is_ball_touching_capture_zone(
                 ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
             )
+            controller_ball_captured = ball_captured
             kick_state = False
             dribbler_state = False
 
@@ -1861,13 +1885,19 @@ else:
                 controller_yaw = bot.yaw
                 controller_ball_x = ball_x
                 controller_ball_y = ball_y
-                if (
+                ball_is_visible = not (
                     args.vision
                     and ball_on_field
                     and not ball_visible_from(bot, ball_x, ball_y, bots)
-                ):
+                )
+                if not ball_is_visible:
                     controller_ball_x = None
                     controller_ball_y = None
+                observed_ball_position = (
+                    (controller_ball_x, controller_ball_y)
+                    if controller_ball_x is not None and controller_ball_y is not None
+                    else None
+                )
                 controller_friendly_bot_positions = [
                     (other_bot.x, other_bot.y)
                     for other_bot in bots
@@ -1878,6 +1908,44 @@ else:
                     for other_bot in bots
                     if other_bot.base_color != bot.base_color
                 ]
+                if args.vision_ball_possession:
+                    if observed_ball_position is not None:
+                        bot.self_ball_candidate = ball_is_near_bot(
+                            observed_ball_position, (bot.x, bot.y)
+                        )
+                    predicted_ball_position = bot.ball_extrapolator.update(
+                        observed_ball_position, current_time / 1000.0
+                    )
+                    if ball_captured:
+                        bot.ball_possession_tracker.clear()
+                    else:
+                        carried_ball_position = bot.ball_possession_tracker.update(
+                            observed_ball_position,
+                            controller_enemy_bot_positions,
+                            current_time / 1000.0,
+                            new_camera_frame=True,
+                        )
+                        if observed_ball_position is None:
+                            if predicted_ball_position is not None:
+                                controller_ball_x, controller_ball_y = (
+                                    predicted_ball_position
+                                )
+                            elif bot.ball_extrapolator.timed_out(
+                                current_time / 1000.0
+                            ):
+                                if bot.self_ball_candidate:
+                                    controller_ball_captured = True
+                                    bot.ball_possession_tracker.clear()
+                                    controller_ball_x = bot.x + 100 * math.cos(
+                                        math.radians(bot.yaw)
+                                    )
+                                    controller_ball_y = bot.y + 100 * math.sin(
+                                        math.radians(bot.yaw)
+                                    )
+                                elif carried_ball_position is not None:
+                                    controller_ball_x, controller_ball_y = (
+                                        carried_ball_position
+                                    )
                 controller_inverted = (
                     bot.controller in (defence, striker, goalie, bot) and bot.base_color != yellow
                 )
@@ -1902,7 +1970,7 @@ else:
                     controller_yaw,
                     controller_ball_x,
                     controller_ball_y,
-                    ball_captured,
+                    controller_ball_captured,
                     state=bot.state,
                     friendly_bot_positions=controller_friendly_bot_positions,
                     enemy_bot_positions=controller_enemy_bot_positions,

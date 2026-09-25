@@ -1,0 +1,2 @@
+/home/arhan/Soccer/STM32/Core/Src/system_stm32f1xx.c:175:6:SystemInit	4	static
+/home/arhan/Soccer/STM32/Core/Src/system_stm32f1xx.c:224:6:SystemCoreClockUpdate	24	static

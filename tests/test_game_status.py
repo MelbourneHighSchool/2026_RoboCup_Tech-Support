@@ -9,6 +9,7 @@ import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
+from lib.ball_possession import BallPossessionTracker, ball_is_near_bot
 from lib.game_status import GameStatus, ImuPause, ProgressHealth
 
 USE_PCB = False
@@ -191,10 +192,22 @@ class MainCameraFallbackTests(unittest.TestCase):
         cls.section = compile(ast.Module(body=running.body[start:end], type_ignores=[]),
                               "main-camera-section", "exec")
 
-    def scene(self, *, captured=False, peer_ball=None, last_update=0, ready=False, yaw=0):
+    def scene(
+        self,
+        *,
+        captured=False,
+        peer_ball=None,
+        last_update=0,
+        ready=False,
+        yaw=0,
+        ball_distance=999,
+        self_ball_candidate=False,
+    ):
         peer = SimpleNamespace(send=lambda _: None, receive=lambda: peer_ball)
         values = {
-            "camera": SimpleNamespace(get_scene_measurement=lambda: (5, 0, 999, [(0, 900)])),
+            "camera": SimpleNamespace(
+                get_scene_measurement=lambda: (5, 0, ball_distance, [(0, 900)])
+            ),
             "status": SimpleNamespace(camera_ready=ready), "last_camera_frame_id": 4,
             "last_camera_bot_positions": [(999, 999)], "x_pos": 100, "y_pos": 200,
             "yaw": yaw, "math": math, "time": SimpleNamespace(time=lambda: 10),
@@ -203,6 +216,9 @@ class MainCameraFallbackTests(unittest.TestCase):
             "break_beam": SimpleNamespace(read=lambda: captured), "peer": peer,
             "bot_mode": SimpleNamespace(name="STRIKER"),
             "classify_camera_bot_positions": lambda bots, *args, **kwargs: ([], bots),
+            "ball_possession_tracker": BallPossessionTracker(),
+            "ball_is_near_bot": ball_is_near_bot,
+            "self_ball_candidate": self_ball_candidate,
         }
         exec(self.section, values)  # noqa: S102 - execute local main.py statements with fake inputs
         return values
@@ -221,6 +237,30 @@ class MainCameraFallbackTests(unittest.TestCase):
         values = self.scene(captured=True, peer_ball={"ball_x": 700, "ball_y": 800})
         self.assertTrue(values["ball_captured"])
         self.assertEqual((values["ball_x"], values["ball_y"]), (200, 200))
+
+    def test_visible_nearby_ball_does_not_replace_broken_break_beam(self):
+        values = self.scene(ready=True, ball_distance=100)
+        self.assertFalse(values["ball_captured"])
+
+    def test_self_possession_starts_after_prediction_timeout(self):
+        values = self.scene(
+            ready=True,
+            ball_distance=None,
+            self_ball_candidate=True,
+            last_update=0,
+        )
+        self.assertTrue(values["ball_captured"])
+        self.assertEqual((values["ball_x"], values["ball_y"]), (200, 200))
+
+    def test_self_possession_waits_while_velocity_is_predicted(self):
+        values = self.scene(
+            ready=True,
+            ball_distance=None,
+            self_ball_candidate=True,
+            last_update=9.8,
+        )
+        self.assertFalse(values["ball_captured"])
+        self.assertAlmostEqual(values["ball_x"], 302)
 
     def test_existing_short_extrapolation_is_preserved(self):
         values = self.scene(last_update=9.8)

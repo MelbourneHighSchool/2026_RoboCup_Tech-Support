@@ -9,7 +9,7 @@ from lib import lidar, send_log
 from lib.camera import Camera
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 from lib.line_sensors import LineSensorFeed
-from striker import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE
+from main import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE
 
 USE_PCB = False
 
