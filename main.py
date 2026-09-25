@@ -36,7 +36,7 @@ LOG_FPS = 30 # How often the bot state is written to the log file
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
 ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
-USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
+USE_PAUSE = False # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
 CONSTANT_SPEED_TORQUE = 2.0  # Amps; The current limit when the bot is at a constant speed.

@@ -128,11 +128,22 @@ def defence(
         enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
+        
         target_x = 1515
-        target_y = 910
+        if y_pos < 850:
+            target_y = 1210
+        elif y_pos > 950:
+            target_y = 610
+        else:
+            target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
-        speed = 0
+        dx, dy = target_x - x_pos, target_y - y_pos
+        distance = math.hypot(dx, dy)
+        if distance > 10:
+            speed = 500
+        else:
+            speed = 0
         rotation = 0
         steering = False
         kick = False
