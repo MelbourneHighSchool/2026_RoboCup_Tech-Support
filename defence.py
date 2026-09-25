@@ -131,10 +131,13 @@ def defence(
     if ball_x is None or ball_y is None:
         
         target_x = 815
-        if last_ball_y < 850:
-            target_y = 1210
-        elif last_ball_y > 950:
-            target_y = 610
+        if last_ball_y is not None:
+            if last_ball_y < 850:
+                target_y = 1210
+            elif last_ball_y > 950:
+                target_y = 610
+            else:
+                target_y = 910
         else:
             target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
