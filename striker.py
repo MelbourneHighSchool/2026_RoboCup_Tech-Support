@@ -364,6 +364,7 @@ def striker(
     ball_x,
     ball_y,
     ball_captured=False,
+    last_ball_y=None,
     state=None,
     friendly_bot_positions=None,
     enemy_bot_positions=None,
@@ -383,15 +384,24 @@ def striker(
         enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
-        if x_pos > 1415:
-            target_x = 1315
-            
+        target_x = 815
+        if last_ball_y is not None:
+            if last_ball_y < 850:
+                target_y = 1210
+            elif last_ball_y > 950:
+                target_y = 610
+            else:
+                target_y = 910
         else:
-            target_x = 1550
-        target_y = 910
+            target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
-        speed = 0
+        dx, dy = target_x - x_pos, target_y - y_pos
+        distance = math.hypot(dx, dy)
+        if distance > 10:
+            speed = 500
+        else:
+            speed = 0
         rotation = 0
         kick = False
         dribbler = 1

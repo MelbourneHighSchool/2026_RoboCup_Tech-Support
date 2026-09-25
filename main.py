@@ -677,6 +677,7 @@ try:
                     ball_x,
                     ball_y,
                     ball_captured,
+                    last_ball_y,
                     state=controller_state,
                     friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=enemy_bot_positions,
