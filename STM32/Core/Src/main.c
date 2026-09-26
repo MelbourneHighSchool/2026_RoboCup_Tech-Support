@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "pcb_sensor_layout.h"
 #include <stdbool.h>
 #include <string.h>
 
@@ -56,13 +57,13 @@ TIM_HandleTypeDef htim4;
 /* USER CODE BEGIN PV */
 uint8_t brightness = 50;
 uint8_t RxData = 0x00;
-uint8_t TxData[32] = {0x00};
+uint8_t TxData[PCB_SENSOR_COUNT] = {0x00};
 /* ADC fills one buffer while the other holds the last complete scan. */
-static uint8_t scan_buffers[2][32] = {{0}};
+static uint8_t scan_buffers[2][PCB_SENSOR_COUNT] = {{0}};
 static uint32_t working_scan_index = 1U;
 static volatile uint32_t published_scan_index = 0U;
-uint8_t multiplexer1 = 0x00;
-uint8_t multiplexer2 = 0x00;
+uint8_t multiplexer1 = PCB_SENSOR_MUX1_FIRST_PIN;
+uint8_t multiplexer2 = PCB_SENSOR_MUX2_FIRST_PIN;
 volatile bool multiplexer1_ready = true;
 volatile bool multiplexer2_ready = true;
 static volatile uint16_t last_multiplexer_us;
@@ -86,6 +87,20 @@ static void MX_TIM2_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void select_multiplexer1(void) {
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, (multiplexer1 & 1U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, (multiplexer1 & 2U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, (multiplexer1 & 4U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, (multiplexer1 & 8U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void select_multiplexer2(void) {
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, (multiplexer2 & 1U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, (multiplexer2 & 2U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, (multiplexer2 & 4U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, (multiplexer2 & 8U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
 static void service_kick_cooldown(void) {
   if (kick_state == KICK_PULSING && (TIM1->CR1 & TIM_CR1_CEN) == 0U) {
     /* One-pulse mode has finished and released PA8. A delayed loop only
@@ -139,60 +154,20 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
   if (hadc->Instance == ADC1) {
     uint32_t raw = HAL_ADC_GetValue(hadc);
     uint8_t value = (uint8_t)((raw * 255U + 2047U) / 4095U);
-    scan_buffers[working_scan_index][multiplexer1] = value;
-    multiplexer1 = (multiplexer1 + 1) % 16;
-    if (multiplexer1 & 0x01) {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_RESET);
-    }
-    if (multiplexer1 & 0x02) {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
-    }
-    if (multiplexer1 & 0x04) {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-    }
-    if (multiplexer1 & 0x08) {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    }
+    scan_buffers[working_scan_index][pcb_sensor_index(1U, multiplexer1)] = value;
+    multiplexer1 = (uint8_t)pcb_sensor_next_pin(1U, multiplexer1);
+    select_multiplexer1();
     multiplexer1_ready = true;
   } else if (hadc->Instance == ADC2) {
     uint32_t raw = HAL_ADC_GetValue(&hadc2);
     uint8_t value = (uint8_t)((raw * 255U + 2047U) / 4095U);
-    scan_buffers[working_scan_index][16 + multiplexer2] = value;
-    multiplexer2 = (multiplexer2 + 1) % 16;
-    if (multiplexer2 & 0x01) {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
-    }
-    if (multiplexer2 & 0x02) {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
-    }
-    if (multiplexer2 & 0x04) {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
-    }
-    if (multiplexer2 & 0x08) {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET);
-    }
+    scan_buffers[working_scan_index][pcb_sensor_index(2U, multiplexer2)] = value;
+    multiplexer2 = (uint8_t)pcb_sensor_next_pin(2U, multiplexer2);
+    select_multiplexer2();
     multiplexer2_ready = true;
   }
   if (multiplexer1_ready && multiplexer2_ready) {
-    if (multiplexer1 == 0U && multiplexer2 == 0U) {
-      /* Finish all sample writes before atomically publishing the index.
-         I2C preemption sees either the complete old or complete new scan. */
+    if (multiplexer1 == PCB_SENSOR_MUX1_FIRST_PIN && multiplexer2 == PCB_SENSOR_MUX2_FIRST_PIN) {
       __DMB();
       published_scan_index = working_scan_index;
       working_scan_index ^= 1U;
@@ -239,6 +214,8 @@ int main(void)
   MX_I2C2_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  select_multiplexer1();
+  select_multiplexer2();
   __HAL_TIM_SET_COUNTER(&htim1, 0);
   SET_BIT(TIM1->CCER, TIM_CCER_CC1E);
   __HAL_TIM_MOE_ENABLE(&htim1);
@@ -264,7 +241,7 @@ int main(void)
     if (multiplexer1_ready && multiplexer2_ready) {
       uint16_t now = (uint16_t)__HAL_TIM_GET_COUNTER(&htim2);
       uint16_t elapsed = (uint16_t)(now - last_multiplexer_us);
-      // Wati 100 us after switching multiplexer before reading ADC
+      // Wait 100 us after switching multiplexer before reading ADC
       if (elapsed > 100U) {
         multiplexer1_ready = false;
         multiplexer2_ready = false;

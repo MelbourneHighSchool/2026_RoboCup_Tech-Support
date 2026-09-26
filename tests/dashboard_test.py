@@ -104,7 +104,7 @@ def test_line_thresholds_save_reload_and_backup(dashboard):
     dashboard.command("save_line_thresholds", {"black": 220, "white": 30}, token)
     path = dashboard.root / "line_sensor_calibration.json"
     assert json.loads(path.read_text()) == {"black": 220, "white": 30,
-                                            "sensor_radius_mm": 75, "sensor_count": 32}
+                                            "sensor_radius_mm": 75, "sensor_count": 30}
     assert list((dashboard.root / "calibration_backups").glob("line_sensor_calibration-*.json"))
     restored = Dashboard(dashboard.root, hardware_factory=FakeHardware, start=False)
     try:
@@ -116,6 +116,21 @@ def test_line_thresholds_save_reload_and_backup(dashboard):
                   {"black": True, "white": 200}, {"black": "nan", "white": 200}):
         with pytest.raises((ValueError, TypeError)):
             line_thresholds(value)
+
+
+def test_line_sensor_layout_preserves_gap_and_returns_owned_metadata(dashboard):
+    layout = dashboard.state()["line_sensor_layout"]
+    assert layout["sensor_count"] == 30
+    assert layout["position_count"] == 32
+    assert layout["dead_bearings_deg"] == [56.25, 67.5]
+    assert layout["sensors"][5] == {
+        "index": 5, "multiplexer": 2, "pin": 15, "bearing_deg": 78.75,
+    }
+    assert layout["sensors"][6] == {
+        "index": 6, "multiplexer": 1, "pin": 1, "bearing_deg": 90,
+    }
+    layout["sensors"][0]["pin"] = 0
+    assert dashboard.state()["line_sensor_layout"]["sensors"][0]["pin"] == 9
 
 
 def test_pcb_start_stop_does_not_require_arming(dashboard):
@@ -136,7 +151,7 @@ def test_pcb_monitor_reads_without_motor_setup_and_invalidates(tmp_path, monkeyp
             calls.append(time.monotonic())
             if fail and len(calls) > 1:
                 raise OSError("PCB disconnected")
-            return list(range(32))
+            return list(range(30))
 
     monkeypatch.setitem(sys.modules, "lib.hardware_controller", types.SimpleNamespace(PcbSensorReader=Reader))
     hardware = Hardware(tmp_path, lambda *_a, **_kw: None)
@@ -144,7 +159,7 @@ def test_pcb_monitor_reads_without_motor_setup_and_invalidates(tmp_path, monkeyp
         hardware.submit("pcb_start", {}, threading.Event())
         wait_until(lambda: hardware.snapshot().get("pcb", {}).get("valid"))
         sample = hardware.snapshot()["pcb"]
-        assert sample["readings"] == list(range(32))
+        assert sample["readings"] == list(range(30))
         assert sample["age_s"] >= 0
         sample["readings"][0] = 255
         assert hardware.snapshot()["pcb"]["readings"][0] == 0
@@ -1022,3 +1037,39 @@ def test_manual_direction_release_timeout_and_pause(tmp_path):
     assert hardware.manual is None
     with pytest.raises(ValueError, match="Start manual"):
         hardware.update_manual(300, 0)
+
+
+def test_pcb_brightness_save_and_restore(dashboard, monkeypatch):
+    from lib import pcb_brightness
+
+    applied = []
+    monkeypatch.setattr("calibration.dashboard.apply_brightness", applied.append)
+    token = dashboard.command("claim", {}, None)["token"]
+    with pytest.raises(PermissionError):
+        dashboard.command("save_pcb_brightness", {"brightness": 127}, None)
+    for invalid in (-1, 255, True, 12.5, "50", None):
+        with pytest.raises(ValueError):
+            dashboard.command("save_pcb_brightness", {"brightness": invalid}, token)
+    assert applied == []
+    for level in (0, 254, 127):
+        dashboard.command("save_pcb_brightness", {"brightness": level}, token)
+        assert pcb_brightness.load_brightness(dashboard.root / "pcb_brightness.json") == level
+    restored = Dashboard(dashboard.root, hardware_factory=FakeHardware, start=False)
+    assert restored.pcb_brightness == 127
+    assert applied == [0, 254, 127, 127]
+    monkeypatch.setattr(pcb_brightness, "apply_brightness", applied.append)
+    assert pcb_brightness.restore_brightness(dashboard.root / "pcb_brightness.json") == 127
+    assert applied[-1] == 127
+    assert pcb_brightness.restore_brightness(dashboard.root / "missing.json") is None
+
+
+def test_pcb_brightness_write_failure_does_not_save(dashboard, monkeypatch):
+    def fail(_level):
+        raise OSError("PCB unavailable")
+
+    monkeypatch.setattr("calibration.dashboard.apply_brightness", fail)
+    token = dashboard.command("claim", {}, None)["token"]
+    with pytest.raises(OSError, match="PCB unavailable"):
+        dashboard.command("save_pcb_brightness", {"brightness": 50}, token)
+    assert not (dashboard.root / "pcb_brightness.json").exists()
+    assert dashboard.pcb_brightness is None

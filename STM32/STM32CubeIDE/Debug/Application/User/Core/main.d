@@ -26,7 +26,8 @@ Application/User/Core/main.o: /home/arhan/Soccer/STM32/Core/Src/main.c \
  ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_i2c.h \
  ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_pwr.h \
  ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h \
- ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h
+ ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h \
+ ../../Core/Inc/pcb_sensor_layout.h
 ../../Core/Inc/main.h:
 ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h:
 ../../Core/Inc/stm32f1xx_hal_conf.h:
@@ -55,3 +56,4 @@ Application/User/Core/main.o: /home/arhan/Soccer/STM32/Core/Src/main.c \
 ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_pwr.h:
 ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h:
 ../../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h:
+../../Core/Inc/pcb_sensor_layout.h:

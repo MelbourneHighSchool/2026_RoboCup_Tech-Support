@@ -24,6 +24,8 @@ from calibration.ball_distance import (
 from calibration.dashboard_hardware import PITCH, Hardware
 from lib.config import load_camera_bearing_offset
 from lib.line_sensors import line_thresholds
+from lib.pcb_brightness import apply_brightness, load_brightness, validate_brightness
+from lib.pcb_layout import SENSOR_COUNT, sensor_layout
 
 USE_PCB = False
 
@@ -238,6 +240,13 @@ class Dashboard:
             self.notify(f"Motor configuration: {exc}", error=True)
         self.hardware = hardware_factory(self.root, self.notify, port=lidar_port, baud=lidar_baud,
                                          use_pcb=use_pcb)
+        self.pcb_brightness = None
+        try:
+            self.pcb_brightness = load_brightness(self.root / "pcb_brightness.json")
+            if self.pcb_brightness is not None:
+                apply_brightness(self.pcb_brightness)
+        except Exception as exc:
+            self.notify(f"PCB brightness restore failed: {exc}", error=True)
         self.threads = []
         if start:
             for name, target in (("preview", self._camera_loop), ("actions", self._jobs), ("watchdog", self._watchdog)):
@@ -296,6 +305,8 @@ class Dashboard:
                 "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
                 "hardware": self.hardware.snapshot(),
                 "line_thresholds": dict(self.line_thresholds),
+                "line_sensor_layout": sensor_layout(),
+                "pcb_brightness": self.pcb_brightness,
                 "bot_samples": list(self.bot_samples), "bot_fit": self.bot_fit,
                 "samples": list(self.samples), "fit": self.fit, "addresses": self.default_addresses,
                 "events": list(self.events)[-20:], "pitch": PITCH,
@@ -322,10 +333,17 @@ class Dashboard:
                 # overtaken by a start still waiting in the dashboard queue.
                 self.hardware.submit(action, {}, threading.Event())
                 return {"queued": True}
+            if action == "save_pcb_brightness":
+                level = validate_brightness(data.get("brightness"))
+                apply_brightness(level)
+                save_json(self.root / "pcb_brightness.json", {"brightness": level})
+                self.pcb_brightness = level
+                self.notify(f"PCB brightness {level}/254 applied and saved")
+                return {}
             if action == "save_line_thresholds":
                 thresholds = line_thresholds(data)
                 save_json(self.root / "line_sensor_calibration.json",
-                          {**thresholds, "sensor_radius_mm": 75, "sensor_count": 32})
+                          {**thresholds, "sensor_radius_mm": 75, "sensor_count": SENSOR_COUNT})
                 self.line_thresholds = thresholds
                 self.notify("Line sensor thresholds saved")
                 return {}

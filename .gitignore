@@ -246,3 +246,5 @@ calibration_backups/
 
 # Generated localisation replay comparisons (retain locally)
 /comparison-*/
+
+pcb_brightness.json

@@ -32,11 +32,11 @@ def test_native_floor_colour_scoring(tmp_path):
     (192, 64, [0, 64, 65, 191, 192, 255], ["white", "white", "green", "green", "black", "black"]),
 ])
 def test_classify_boundaries_and_polarity(black, white, readings, expected):
-    samples = readings + [100] * 26
-    assert classify_readings(samples, line_thresholds({"black": black, "white": white})) == expected + ["green"] * 26
+    samples = readings + [100] * 24
+    assert classify_readings(samples, line_thresholds({"black": black, "white": white})) == expected + ["green"] * 24
 
 
-@pytest.mark.parametrize("readings", [[1] * 31, [1] * 33, [-1] * 32, [256] * 32, [True] * 32, [1.5] * 32])
+@pytest.mark.parametrize("readings", [[1] * 29, [1] * 31, [1] * 32, [-1] * 30, [256] * 30, [True] * 30, [1.5] * 30])
 def test_bad_readings_rejected(readings):
     with pytest.raises(ValueError):
         classify_readings(readings, {"black": 64, "white": 192})
@@ -49,10 +49,10 @@ def test_feed_saved_thresholds_deduplicates_and_clears(tmp_path):
     calls = []
     lidar = SimpleNamespace(set_line_readings=lambda *args: calls.append(args),
                             clear_line_readings=lambda: calls.append("clear"))
-    snapshot = {"timestamp_s": 9.9, "readings": [0, 100, 255, 40] * 8, "valid": True}
+    snapshot = {"timestamp_s": 9.9, "readings": [0, 100, 255] * 10, "valid": True}
     hardware = SimpleNamespace(get_pcb_snapshot=lambda: snapshot)
     feed.update(lidar, hardware)
-    assert calls == [(["white", "green", "black", "white"] * 8, 9.9)]
+    assert calls == [(["white", "green", "black"] * 10, 9.9)]
     feed.update(lidar, hardware)
     assert len(calls) == 1
     for stamp, valid in [(9, True), (10.1, True), (float("nan"), True), (None, True), (9.95, False)]:
@@ -83,11 +83,11 @@ def test_native_staging_does_not_change_pose(tmp_path):
     try:
         pose = lidar.get_coordinates_info()
         timestamp = time.monotonic()
-        colours = ["black", "white", "green", "green"] * 8
+        colours = ["black", "white", "green"] * 10
         path = tmp_path / "line_sensor_calibration.json"
         path.write_text('{"black": 64, "white": 192}')
         hardware = SimpleNamespace(get_pcb_snapshot=lambda: {
-            "readings": [0, 255, 100, 150] * 8, "timestamp_s": timestamp, "valid": True,
+            "readings": [0, 255, 100] * 10, "timestamp_s": timestamp, "valid": True,
         })
         LineSensorFeed(path, use_pcb=True).update(lidar, hardware)
         stored = lidar.get_line_readings()
@@ -97,9 +97,11 @@ def test_native_staging_does_not_change_pose(tmp_path):
         stored["colours"][0] = "green"
         assert lidar.get_line_readings()["colours"][0] == "black"
         with pytest.raises(ValueError):
-            lidar.set_line_readings(["red"] * 32, timestamp)
+            lidar.set_line_readings(["red"] * 30, timestamp)
         with pytest.raises(ValueError):
             lidar.set_line_readings(["green"], timestamp)
+        with pytest.raises(ValueError, match="30 colours"):
+            lidar.set_line_readings(["green"] * 32, timestamp)
         lidar.clear_line_readings()
         assert not lidar.get_line_readings()["valid"]
         lidar.set_line_readings(colours, timestamp - 1)

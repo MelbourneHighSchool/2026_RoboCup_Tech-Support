@@ -596,7 +596,7 @@ PYBIND11_MODULE(lidar, m) {
     m.def("seed", &loc_seed);
     m.def("set_line_readings", &loc_set_line_readings,
           py::arg("colours"), py::arg("timestamp_s"),
-          "Store 32 classified PCB readings for optional floor-colour scoring");
+          "Store 30 classified PCB readings in front-first working-sensor order for optional floor-colour scoring");
     m.def("clear_line_readings", &loc_clear_line_readings);
     m.def("get_line_readings", []() {
         const auto snapshot = loc_get_line_readings();

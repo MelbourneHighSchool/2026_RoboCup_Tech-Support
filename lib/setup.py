@@ -16,6 +16,7 @@ from setuptools.command.build_ext import build_ext
 
 lib_dir = Path(__file__).resolve().parent
 project_root = lib_dir.parent
+pcb_layout_header = str(project_root / "STM32/Core/Inc/pcb_sensor_layout.h")
 
 # Get pybind11 include path
 pybind11_include = pybind11.get_include()
@@ -28,6 +29,7 @@ sdk_lib = str(project_root / "rplidar_sdk/output/Linux/Release")
 # Define the extension module
 lidar_module = Extension(
     'lib.lidar',
+    depends=[pcb_layout_header],
     sources=[
         str(lib_dir / 'lidar_module.cpp'),
         str(lib_dir / 'localisation.cpp'),
@@ -47,6 +49,7 @@ lidar_module = Extension(
 
 hardware_module = Extension(
     'lib.hardware_controller',
+    depends=[pcb_layout_header],
     sources=[str(lib_dir / name) for name in (
         'hardware_module.cpp', 'hardware_controller.cpp',
         'PowerfulBLDCdriver.cpp', 'linux_wire.cpp',

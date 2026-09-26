@@ -42,7 +42,7 @@ struct HardwareHealth {
     uint64_t imu_recovery_generation;
 };
 struct PcbSnapshot {
-    std::array<uint8_t, 32> readings{};
+    std::array<uint8_t, PCB_SENSOR_COUNT> readings{};
     // Read completion time in steady-clock seconds, absent before the first read.
     std::optional<double> timestamp_s;
     std::optional<double> age_s;

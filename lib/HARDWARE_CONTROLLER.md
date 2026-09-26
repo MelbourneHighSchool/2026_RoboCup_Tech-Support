@@ -239,7 +239,7 @@ updates active against the prior baseline. Physical timing and driver response
 must be checked on the robot; the offline suites emulate the bus and GPIO.
 # PCB sensor snapshot
 
-`get_pcb_snapshot()` returns a copied dictionary with `readings` (32 raw bytes,
+`get_pcb_snapshot()` returns a copied dictionary with `readings` (30 raw bytes,
 front then clockwise), `timestamp_s` (steady-clock seconds at read completion),
 `age_s` (seconds since that read), and `valid`. The values are captured together
 under the controller state mutex; obtaining a snapshot performs no I2C I/O.
@@ -248,6 +248,15 @@ Stop or controller failure invalidates the snapshot while retaining the last
 readings and timestamp for diagnostics. Consumers must check both `valid` and
 `age_s` against their freshness requirement; validity alone does not imply a
 recent sample. The timestamp describes Pi read completion, not PCB ADC acquisition.
+
+The 30 readings are already in front-first working-sensor order: multiplexer 2
+pins 9–13, then pin 15, multiplexer 1 pins 1–15, then multiplexer 2 pins 0–8.
+Multiplexer 1 pin 0 and multiplexer 2 pin 14 are never sampled. Physical positions
+5 and 6 are dead, so index `i` has bearing `(i < 5 ? i : i + 2) * 11.25` degrees.
+Use `pcb_sensor_bearing_deg()` in native code; do not apply another yaw offset or
+redistribute the working sensors evenly. See [the protocol](../i2c_protocol.md).
+Both Pi extensions must be rebuilt and deployed with the matching STM32 firmware;
+the old 32-byte stream is incompatible.
 
 Each entry script defines `USE_PCB = False`. Pass it as `use_pcb=USE_PCB` to
 `HardwareController.from_i2c_addresses`, `lidar.start_coordinates`, and
@@ -262,7 +271,7 @@ open the GPIO kicker.
 `lib.line_sensors.LineSensorFeed` loads `line_sensor_calibration.json` once at
 session startup. Both `main.py` (including paused/initial-pose loops) and dashboard
 localisation forward each fresh PCB sample through
-`lidar.set_line_readings(colours, timestamp_s)`. Python classifies all 32 readings
+`lidar.set_line_readings(colours, timestamp_s)`. Python classifies all 30 readings
 as `"black"`, `"green"`, or `"white"`, preserving front-first clockwise order.
 Threshold endpoints belong to black/white; green is strictly between. Reversed
 threshold polarity is supported. Missing or invalid calibration disables this

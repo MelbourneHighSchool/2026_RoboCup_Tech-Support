@@ -401,7 +401,7 @@ def striker(
     # Skip approach offset while captured: ball is in front, so direction ≈ yaw and
     # ±80 would clear goal rotation and oscillate against facing forward (rotation=0).
     if not ball_captured and dist < 300:
-        if -10 < direction < 10:
+        if -13 < direction < 13:
             speed = 900
         elif 0 < direction < 180:
             offset = 60

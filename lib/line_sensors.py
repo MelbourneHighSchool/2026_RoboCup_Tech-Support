@@ -5,6 +5,8 @@ import math
 import time
 from pathlib import Path
 
+from lib.pcb_layout import SENSOR_COUNT
+
 CALIBRATION_FILE = Path(__file__).resolve().parents[1] / "line_sensor_calibration.json"
 MAX_AGE_S = 0.5
 USE_PCB = False
@@ -31,9 +33,9 @@ def line_thresholds(value):
 
 
 def classify_readings(readings, thresholds):
-    """Return 32 colour names, in sensor order; threshold endpoints are inclusive."""
-    if len(readings) != 32 or any(type(v) is not int or not 0 <= v <= 255 for v in readings):
-        raise ValueError("Expected 32 integer sensor readings between 0 and 255")
+    """Return 30 colour names, in packed sensor order; endpoints are inclusive."""
+    if len(readings) != SENSOR_COUNT or any(type(v) is not int or not 0 <= v <= 255 for v in readings):
+        raise ValueError("Expected 30 integer sensor readings between 0 and 255")
     black, white = thresholds["black"], thresholds["white"]
     if black < white:
         return ["black" if v <= black else "white" if v >= white else "green" for v in readings]

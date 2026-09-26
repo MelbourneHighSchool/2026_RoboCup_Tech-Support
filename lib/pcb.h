@@ -1,6 +1,7 @@
 #pragma once
 
 #include "linux_wire.h"
+#include "../STM32/Core/Inc/pcb_sensor_layout.h"
 
 #include <array>
 #include <cstdint>
@@ -17,12 +18,12 @@ public:
     explicit Pcb(TwoWire& bus) : bus_(bus) {}
 
     // Raw 0–255 readings, starting at the front and proceeding clockwise.
-    // Voltage = reading * 3.3 / 255; sensor bearing = index * 11.25 degrees.
-    std::array<uint8_t, 32> read_sensors() {
+    // Voltage = reading * 3.3 / 255; bearing = pcb_sensor_bearing_deg(index), preserving two dead positions.
+    std::array<uint8_t, PCB_SENSOR_COUNT> read_sensors() {
         std::lock_guard<std::mutex> lock(bus_.mutex);
         // A plain read: sending a register byte would execute a PCB command.
-        bus_.requestFrom(ADDRESS, 32, 1);
-        std::array<uint8_t, 32> values{};
+        bus_.requestFrom(ADDRESS, PCB_SENSOR_COUNT, 1);
+        std::array<uint8_t, PCB_SENSOR_COUNT> values{};
         for (auto& value : values)
             value = bus_.read();
         return values;

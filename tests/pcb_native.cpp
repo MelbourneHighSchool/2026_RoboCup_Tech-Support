@@ -21,7 +21,7 @@ protected:
         if (fail)
             throw std::system_error(std::make_error_code(std::errc::io_error));
         if (reading) {
-            assert(size == 32);
+            assert(size == 30);
             for (size_t i = 0; i < size; ++i)
                 data[i] = static_cast<uint8_t>(255 - i);
         } else {

@@ -6,6 +6,7 @@ document.querySelector('nav').append(lineTab);
 let token = null, state = null, tab = 'camera', frozen = null;
 let messageUntil = 0, lastEvent = '', samplesSignature = '', fitSignature = '';
 let modelsSignature = '';
+let brightnessLoaded = false;
 let lineDirty = false, lineLoaded = false, lineEditVersion = 0;
 let botFrame = null, botImage = null, selectedBot = null, botFreezePending = false;
 const fmt = (v, digits = 1) => v == null ? 'unavailable' : Number(v).toFixed(digits);
@@ -32,6 +33,13 @@ handle('stop', 'stop');
 handle('startGpio', 'gpio');
 handle('pcbStart', 'pcb_start');
 handle('pcbStop', 'pcb_stop');
+handle('pcbBrightnessSave', 'save_pcb_brightness', () => {
+  const value = $('pcbBrightness').value;
+  const brightness = Number(value);
+  if (value === '' || !Number.isInteger(brightness) || brightness < 0 || brightness > 254)
+    throw new Error('Enter a whole-number brightness from 0 to 254.');
+  return {brightness};
+});
 function lineValues() {
   const black = Number($('lineBlack').value), white = Number($('lineWhite').value);
   if (['lineBlack', 'lineWhite'].some(id => $(id).value === '') ||
@@ -45,6 +53,8 @@ function lineColour(value, black, white) {
 }
 let lineNodes = [], lineReceivedAt = 0;
 function renderLineSensors(s) {
+  const layout = s?.line_sensor_layout;
+  if (!layout) return;
   if (!lineNodes.length) {
     const svg = $('sensorRing'), ns = 'http://www.w3.org/2000/svg';
     const element = (name, attrs, text) => {
@@ -56,14 +66,21 @@ function renderLineSensors(s) {
     element('circle', {cx:300, cy:300, r:210, fill:'none', stroke:'#486070', 'stroke-dasharray':'4 6'});
     element('text', {x:300, y:22, 'text-anchor':'middle', fill:'#e9f0f4'}, 'FRONT ↑');
     element('text', {x:300, y:295, 'text-anchor':'middle', fill:'#a2b5c3'}, '75 mm radius');
-    element('text', {x:300, y:322, 'text-anchor':'middle', fill:'#a2b5c3'}, '32 sensors · clockwise →');
-    for (let i = 0; i < 32; i++) {
-      const angle = i * Math.PI / 16;
+    element('text', {x:300, y:322, 'text-anchor':'middle', fill:'#a2b5c3'}, `${layout.sensor_count} working sensors · clockwise →`);
+    for (const bearing of layout.dead_bearings_deg) {
+      const angle = bearing * Math.PI / 180;
+      const circle = element('circle', {cx:300+210*Math.sin(angle), cy:300-210*Math.cos(angle), r:16, fill:'none', stroke:'#a2b5c3', 'stroke-width':2, 'stroke-dasharray':'3 3'});
+      const title = document.createElementNS(ns, 'title');
+      title.textContent = `Dead sensor position · ${bearing}° · no reading`; circle.append(title);
+      element('text', {x:300+210*Math.sin(angle), y:305-210*Math.cos(angle), 'text-anchor':'middle', fill:'#a2b5c3'}, '×');
+    }
+    for (const sensor of layout.sensors) {
+      const i = sensor.index, angle = sensor.bearing_deg * Math.PI / 180;
       const circle = element('circle', {cx:300+210*Math.sin(angle), cy:300-210*Math.cos(angle), r:16, stroke:'#93a7b3', 'stroke-width':2});
       const title = document.createElementNS(ns, 'title'); circle.append(title);
       element('text', {x:300+245*Math.sin(angle), y:305-245*Math.cos(angle), 'text-anchor':'middle', fill:'#e9f0f4'}, String(i));
       const card = document.createElement('div'); card.className = 'sensor-reading'; $('sensorReadings').append(card);
-      lineNodes.push({circle, title, card});
+      lineNodes.push({circle, title, card, sensor});
     }
   }
   if (s?.line_thresholds && (!lineLoaded || !lineDirty)) {
@@ -78,14 +95,15 @@ function renderLineSensors(s) {
   $('lineEditStatus').textContent = lineDirty ? 'Unsaved preview' : 'Showing saved thresholds (64 / 192 are provisional defaults).';
   const pcb = s?.hardware.pcb;
   const age = pcb?.age_s == null ? null : pcb.age_s + (performance.now() - lineReceivedAt) / 1000;
-  const fresh = pcb?.valid && age != null && age <= 0.5 && pcb.readings?.length === 32;
+  const fresh = pcb?.valid && age != null && age <= 0.5 && pcb.readings?.length === layout.sensor_count;
   const colours = {black:'#080c10', green:'#279b58', white:'#ffffff', unavailable:'#50616e'};
-  lineNodes.forEach(({circle, title, card}, i) => {
-    const raw = fresh ? pcb.readings[i] : null;
+  lineNodes.forEach(({circle, title, card, sensor}) => {
+    const {index, multiplexer, pin, bearing_deg: bearing} = sensor;
+    const raw = fresh ? pcb.readings[index] : null;
     const colour = raw != null && values ? lineColour(raw, values.black, values.white) : 'unavailable';
     circle.setAttribute('fill', colours[colour]);
-    title.textContent = `Sensor ${i} · ${i*11.25}° · ${raw ?? '—'} · ${colour}`;
-    card.textContent = `${i}: ${raw ?? '—'} · ${colour}`;
+    title.textContent = `Sensor ${index} · MUX ${multiplexer} pin ${pin} · ${bearing}° · ${raw ?? '—'} · ${colour}`;
+    card.textContent = `${index} · MUX ${multiplexer} pin ${pin} · ${bearing}°: ${raw ?? '—'} · ${colour}`;
     card.style.borderLeftColor = colours[colour];
   });
   $('pcbStatus').textContent = fresh ? `Live · sample age ${fmt(age, 2)} s · black / green / white`
@@ -265,6 +283,13 @@ function render(s) {
   lineReceivedAt = performance.now();
   renderLineSensors(s);
   state = s;
+  if (!brightnessLoaded) {
+    if (s.pcb_brightness != null) $('pcbBrightness').value = s.pcb_brightness;
+    brightnessLoaded = true;
+  }
+  $('pcbBrightnessStatus').textContent = s.pcb_brightness == null
+    ? 'No saved brightness' : `Saved: ${s.pcb_brightness}/254 · restored on startup`;
+
   $('leaseStatus').textContent = token ? (s.control.armed ? 'Controller · ARMED' : 'Controller · disarmed') : (s.control.occupied ? 'Viewer · controller connected' : 'Viewer');
   $('claim').disabled = !!token || s.control.occupied;
   document.querySelectorAll('.control').forEach(e => { e.disabled = !token; });

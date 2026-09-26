@@ -1006,7 +1006,7 @@ static Particle line_pose_at_time(Particle p, double from, double to) {
 static float score_floor_colours(const Particle& p, const LocLineReadings& sample) {
     float score = 0;
     for (size_t i = 0; i < sample.colours.size(); ++i) {
-        const float angle = (p.yaw_deg + i*11.25f) * (3.14159265358979323846f / 180.0f);
+        const float angle = (p.yaw_deg + pcb_sensor_bearing_deg(i)) * (3.14159265358979323846f / 180.0f);
         const float x = p.x + 75*std::cos(angle), y = p.y + 75*std::sin(angle);
         const int observed = sample.colours[i] == "black" ? 0 : sample.colours[i] == "white" ? 2 : 1;
         int matches = 0;
@@ -1017,7 +1017,7 @@ static float score_floor_colours(const Particle& p, const LocLineReadings& sampl
         score += std::log(0.05f + 0.85f * matches/9.0f);
     }
     // Nearby sensors are correlated: cap the entire ring at four observations.
-    return score * (4.0f / 32.0f);
+    return score * (4.0f / PCB_SENSOR_COUNT);
 }
 
 static void apply_pending_line_readings_locked(double now) {
@@ -1289,8 +1289,8 @@ void loc_update_scan(const LocScanPoint* points, int count,
 }
 
 void loc_set_line_readings(const std::vector<std::string>& colours, double timestamp_s) {
-    if (colours.size() != 32 || !std::isfinite(timestamp_s) || timestamp_s <= 0)
-        throw std::invalid_argument("Expected 32 colours and a positive finite timestamp");
+    if (colours.size() != PCB_SENSOR_COUNT || !std::isfinite(timestamp_s) || timestamp_s <= 0)
+        throw std::invalid_argument("Expected 30 colours and a positive finite timestamp");
     for (const auto& colour : colours)
         if (colour != "black" && colour != "green" && colour != "white")
             throw std::invalid_argument("Line colour must be black, green, or white");

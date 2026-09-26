@@ -7,8 +7,8 @@ static LocLineReadings sample_for(const Particle& p, double timestamp) {
     LocLineReadings result;
     result.timestamp_s = timestamp;
     result.valid = true;
-    for (size_t i = 0; i < 32; ++i) {
-        const float a = (p.yaw_deg + i*11.25f) * 3.14159265358979323846f/180;
+    for (size_t i = 0; i < PCB_SENSOR_COUNT; ++i) {
+        const float a = (p.yaw_deg + pcb_sensor_bearing_deg(i)) * 3.14159265358979323846f/180;
         const int colour = floor_colour(p.x + 75*std::cos(a), p.y + 75*std::sin(a));
         result.colours[i] = colour == 0 ? "black" : colour == 2 ? "white" : "green";
     }
@@ -17,6 +17,23 @@ static LocLineReadings sample_for(const Particle& p, double timestamp) {
 
 static void submit(const LocLineReadings& sample) {
     loc_set_line_readings({sample.colours.begin(), sample.colours.end()}, sample.timestamp_s);
+}
+
+static void gap_bearings_and_score_strength() {
+    // At x=235, sensor 5 (78.75 degrees) has 3/9 white footprint points;
+    // sensor 6 (90 degrees) has none. A packed-index angle would put both
+    // sensors on the white border instead, revealing a misplaced/closed gap.
+    const Particle p{235,900,0,1};
+    LocLineReadings sample;
+    sample.colours.fill("green");
+    const float baseline = score_floor_colours(p, sample);
+    sample.colours[5] = "white";
+    const float delta5 = score_floor_colours(p, sample) - baseline;
+    assert(std::abs(delta5 - (4.0f/30) * std::log((0.05f+0.85f/3)/(0.05f+0.85f*2/3))) < 0.00001f);
+    sample.colours[5] = "green";
+    sample.colours[6] = "white";
+    const float delta6 = score_floor_colours(p, sample) - baseline;
+    assert(std::abs(delta6 - (4.0f/30) * std::log(0.05f/0.90f)) < 0.00001f);
 }
 
 static double setup(bool enabled = true, bool ready = true) {
@@ -174,6 +191,7 @@ static void resumed_scan(bool enabled) {
 
 int main() {
     loc_init_map(2430,1820);
+    gap_bearings_and_score_strength();
     setup(USE_PCB);
     assert(!g_use_pcb);
     assert(floor_colour(275,900)==2 && floor_colour(350,900)==1);
@@ -181,9 +199,9 @@ int main() {
     assert(floor_colour(2155,900)==2 && floor_colour(1830,900)==0);
     const Particle truth{350,900,0,1}, wrong{430,900,0,1};
     const auto sample = sample_for(truth,monotonic_time_s());
-    assert(sample.colours[16]=="white" && sample.colours[0]=="green");
+    assert(sample.colours[14]=="white" && sample.colours[0]=="green");
     assert(score_floor_colours(truth,sample) > score_floor_colours(wrong,sample));
-    assert(sample_for({350,900,90,1},monotonic_time_s()).colours[8]=="white");
+    assert(sample_for({350,900,90,1},monotonic_time_s()).colours[6]=="white");
     submit(sample);
     loc_predict_odometry(0,0,0,0.02);
     assert(g_line_readings.applied_count == 0);

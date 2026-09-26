@@ -321,8 +321,9 @@ line calibration page.
 with respect to dashboard driving, calibration, and localisation; stop localisation
 before starting it, and run the dashboard separately from the game. No motor arming
 or `USE_PCB` change is needed. Rebuild the hardware extension after adding this binding.
-The Line sensors page previews black/green/white on a 32-sensor ring of radius 75 mm,
-with index 0 forward and increasing clockwise. `line_sensor_calibration.json` stores
+The Line sensors page previews black/green/white on a ring of 30 working sensors at radius 75 mm,
+with index 0 forward and increasing clockwise, preserving the two dead physical
+positions (see PCB sensor wiring below). `line_sensor_calibration.json` stores
 raw-byte black/white thresholds; green is strictly between them and reversed polarity
 is supported. Grey means invalid or older than 0.5 seconds. Initial 64/192 values are
 provisional, not measured calibration. `lib/line_sensors.py` shares threshold
@@ -431,3 +432,52 @@ wait and service durations are separate. Rebuild the hardware extension on the P
 **Problem:** The camera detects its own robot as well as the calibration target. Detection indices belong to individual inference frames, so using a selected index against the latest live snapshot could sample a different bot.
 
 **Solution:** Dashboard `freeze(for_bots=True)` retains the source pixels and a deep copy of their bot detections in the bounded frozen-frame cache, rejecting stale captures. Bot samples submit `frozen_id` and `bot_index`; the backend reads only that retained detection, validates the resolution, and rejects expired frames or invalid selections. Freshness is checked when freezing, allowing time to select and measure afterwards. The UI returns to live after submitting each sample. Pixel picking still uses the same unannotated source via `frozen_frame()`.
+
+## Persistent PCB LED brightness
+
+**Problem:** The PCB already had a native brightness command, but Python's
+`PcbSensorReader` exposed only sensor reads. Brightness must also work when
+`USE_PCB` disables line-sensor localisation.
+
+**Solution:** `PcbSensorReader.set_brightness()` exposes only the validated 0–254
+LED command (255 is kick). `lib/pcb_brightness.py` restores the project-root
+`pcb_brightness.json` in dashboard and game startup regardless of `USE_PCB`, only
+when saved settings exist. A brightness write is one addressed `I2C_RDWR`
+transaction with no register-selection state, so its separate short-lived bus
+handle can coexist with native sensor/motor polling. Rebuild the hardware
+extension on the Pi after updating the binding.
+
+## PCB sensor wiring and physical positions
+
+**Problem:** ADC channel order is not robot-relative sensor order. The forward
+sensor is multiplexer 2 pin 9. Multiplexer 1 pin 0 is disconnected and multiplexer
+2 pin 14 is broken; simply omitting those channel numbers would put the physical
+gap in the wrong place. The two dead positions are both after multiplexer 2 pin
+13, not at the multiplexer boundary.
+
+**Solution:** `STM32/Core/Inc/pcb_sensor_layout.h` defines the shared firmware/native
+mapping. Transmit 30 working readings: MUX2 pins 9–13, MUX2 pin 15, MUX1 pins 1–15,
+then MUX2 pins 0–8. Physical slots 5/6 (56.25°/67.5°) are dead; packed index `i`
+has bearing `(i < 5 ? i : i + 2) * 11.25°`. MUX2 pin 15 and MUX1 pin 1 are
+adjacent at 78.75°/90°. Never sample the two invalid channels, never rotate the
+stream again on the Pi, and never use 12° spacing. Both multiplexers scan 15
+working channels before the firmware publishes a complete buffer. Python
+dashboard metadata lives in `lib/pcb_layout.py`; `tests/test_pcb_mapping.py`
+compares it with the native mapping and exercises production ADC/I2C callbacks.
+Update STM32 firmware and rebuild both Pi extensions together for the 30-byte
+protocol. Existing black/white thresholds remain valid.
+
+**Diagnostic — dashboard `I2C address 55 read` error after flashing:** 55 is
+decimal `0x37`, the PCB. The requested length is compiled into
+`lib.hardware_controller`, not determined by dashboard Python. An old extension
+requests 32 bytes from firmware that only supplies 30, which can stall the read.
+Stop the dashboard process, rebuild on the Pi using its runtime Python
+(`.venv/bin/python lib/setup.py build_ext --inplace --force`), then restart it.
+A browser refresh or Stop/Start sensors does not unload an already imported
+native module. This is a diagnostic possibility, not proof that every read error
+is a version mismatch; retain the full underlying I/O error when investigating.
+
+**Local firmware build:** If `arm-none-eabi-gcc` is absent from PATH, CubeIDE's
+bundled compiler is under `~/st/stm32cubeide_*/plugins/*gnu-tools*/tools/bin/`.
+Add that directory to PATH for `make -C STM32/STM32CubeIDE/Debug all`. The Debug
+outputs are tracked; use a temporary build copy for verification-only builds.

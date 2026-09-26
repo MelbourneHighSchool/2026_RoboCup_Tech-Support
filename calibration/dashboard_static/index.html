@@ -7,7 +7,8 @@
 <nav aria-label="Calibration panels"><button class="active" data-tab="camera">Camera</button><button data-tab="ball">Distances</button><button data-tab="gpio">Break beam &amp; kicker</button><button data-tab="manual">Manual drive</button><button data-tab="motors">Motors</button><button data-tab="localisation">Localisation</button></nav>
 <main>
 <section id="lineSensors" class="panel">
-<div class="section-title"><div><h2>Line sensors</h2><p>32 sensors · 75 mm from centre · sensor 0 faces forward, numbered clockwise.</p></div><div class="toolbar"><button id="pcbStart" class="control primary">Start sensors</button><button id="pcbStop" class="control">Stop sensors</button></div></div>
+<div class="toolbar"><label for="pcbBrightness">PCB LED brightness (0–254)</label><input id="pcbBrightness" class="control" type="number" min="0" max="254" step="1" value="50"><button id="pcbBrightnessSave" class="control">Apply &amp; save</button><span id="pcbBrightnessStatus"></span></div>
+<div class="section-title"><div><h2>Line sensors</h2><p>30 working sensors · 75 mm from centre · sensor 0 faces forward, numbered clockwise. Two dead positions are marked ×.</p></div><div class="toolbar"><button id="pcbStart" class="control primary">Start sensors</button><button id="pcbStop" class="control">Stop sensors</button></div></div>
 <div class="grid"><article><svg id="sensorRing" viewBox="0 0 600 600" role="img" aria-label="Live line sensor ring, front at the top"></svg><p id="pcbStatus" role="status">Monitoring has not started.</p></article>
 <article><h3>Colour thresholds</h3><p>Raw readings range from 0 to 255. Green falls between the two thresholds. Put black above white if your sensor voltage falls on white paint.</p>
 <label>Black threshold<input id="lineBlack" class="control" type="number" min="0" max="255" step="1" value="64"></label><input id="lineBlackSlider" class="control" type="range" min="0" max="255" value="64" aria-label="Black threshold">

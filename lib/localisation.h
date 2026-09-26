@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "motion_history.h"
+#include "../STM32/Core/Inc/pcb_sensor_layout.h"
 
 struct LocScanPoint {
     float angle_deg;
@@ -53,8 +54,9 @@ struct LocParticle {
 
 // Optional independent floor-colour observations, enabled after a LIDAR fix.
 // Sensor 0 is forward, clockwise order, all at radius 75 mm.
+// Packed readings omit physical positions 5/6; use pcb_sensor_bearing_deg().
 struct LocLineReadings {
-    std::array<std::string, 32> colours;
+    std::array<std::string, PCB_SENSOR_COUNT> colours;
     double timestamp_s = 0.0;
     unsigned long long applied_count = 0;
     double last_applied_timestamp_s = 0.0;

@@ -43,7 +43,7 @@ public:
         if (address == 0x37) {
             if (state_->fail_address == address) throw std::runtime_error("PCB unavailable");
             if (reading) {
-                assert(size == 32);
+                assert(size == 30);
                 for (size_t i = 0; i < size; ++i) data[i] = i;
                 ++state_->pcb_reads;
             } else {
@@ -643,7 +643,7 @@ int main() {
             0x4a, 10, 27, "", nullptr, 8, 1, 0.02, 0.5, nullptr, true);
         controller.set_startup_yaw(0);
         await_condition([&] { return controller.get_pcb_snapshot().valid; });
-        assert(controller.get_pcb_snapshot().readings[31] == 31);
+        assert(controller.get_pcb_snapshot().readings[29] == 29);
         controller.move(0, 0, 0, 0, 0, true);
         await_condition([&] { std::lock_guard<std::mutex> lock(state->mutex); return state->pcb_kicks == 1; });
         std::this_thread::sleep_for(std::chrono::milliseconds(70));

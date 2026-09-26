@@ -92,3 +92,24 @@ Release keys/the joystick to request zero speed. Leaving the panel or losing
 window focus stops and disarms. Input updates expire after 350 ms; the independent
 watchdog also stops a stalled manual worker. The physical pause switch remains
 active. Click outside numeric inputs before using the arrow keys to drive.
+
+The **Line sensors** ring shows 30 working sensors at radius 75 mm, numbered by
+their transmitted byte index. Sensor 0 is multiplexer 2 pin 9, facing forward.
+Hover over a reading for its multiplexer, zero-based pin and physical bearing.
+Two crossed, dashed markers at 56.25° and 67.5° mark dead positions and never
+receive readings or colour classifications. Sensor 5 (multiplexer 2 pin 15) is
+at 78.75°; sensor 6 (multiplexer 1 pin 1) immediately follows at 90°.
+The [protocol](../i2c_protocol.md) specifies the complete mapping. Deploy matching
+firmware and rebuild both Pi extensions before using the 30-byte stream.
+Existing saved black/white thresholds remain usable; saving records
+`sensor_count: 30` while retaining the 75 mm radius.
+
+PCB LED brightness is under **Line sensors**. Take control, enter a whole number
+from 0 (off) to 254 (full), and choose **Apply & save**; arming is not required.
+The dashboard and `main.py` restore `pcb_brightness.json` from the project root on
+startup, including when PCB line-sensor localisation is disabled. Without a saved
+value they leave firmware brightness unchanged. Failed writes are reported and do
+not save a new value; startup restore failures are reported without stopping the app.
+
+After updating, rebuild the native interface on the Pi:
+`SOCCER_HARDWARE_ONLY=1 .venv/bin/python lib/setup.py build_ext --inplace`.

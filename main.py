@@ -29,6 +29,7 @@ from lib.localisation_motion import (
     feed_timed_motion,
     record_floor,
 )
+from lib.pcb_brightness import restore_brightness
 from lib.recording_session import RecordingSession
 
 USE_PCB = False
@@ -319,6 +320,10 @@ def feed_imu_yaw_prior(imu_sensor):
 
 
 try:
+    try:
+        restore_brightness()
+    except Exception as exc:
+        print(f"Warning: PCB brightness restore failed: {exc}")
     try:
         display = StatusDisplay()
     except Exception as exc:

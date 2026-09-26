@@ -9,11 +9,12 @@ namespace py = pybind11;
 using hardware::HardwareController;
 
 namespace {
-// Dashboard-only reader: owns no motors, IMU, GPIO, or command interface.
+// PCB sensor/LED interface: owns no motors, IMU, GPIO, or kick interface.
 class PcbSensorReader {
 public:
     explicit PcbSensorReader(const std::string& device) : wire_(device), pcb_(wire_) {}
-    std::array<uint8_t, 32> read_sensors() { return pcb_.read_sensors(); }
+    std::array<uint8_t, PCB_SENSOR_COUNT> read_sensors() { return pcb_.read_sensors(); }
+    void set_brightness(int level) { pcb_.set_brightness(level); }
 private:
     LinuxWire wire_;
     hardware::Pcb pcb_;
@@ -69,6 +70,8 @@ std::unique_ptr<HardwareController> from_addresses(
 PYBIND11_MODULE(hardware_controller, module) {
     py::class_<PcbSensorReader>(module, "PcbSensorReader")
         .def(py::init<const std::string&>(), py::arg("i2c_device") = "/dev/i2c-1")
+        .def("set_brightness", &PcbSensorReader::set_brightness,
+             py::arg("level"), py::call_guard<py::gil_scoped_release>())
         .def("read_sensors", &PcbSensorReader::read_sensors,
              py::call_guard<py::gil_scoped_release>());
     module.doc() = "Native hardware controller: motors, BNO08x IMU and GPIO kicker";
