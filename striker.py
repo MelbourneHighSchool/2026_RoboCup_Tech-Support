@@ -368,12 +368,12 @@ def striker(
         enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
-        target_x = 815
+        target_x = 960
         if last_ball_y is not None:
-            if last_ball_y < 850:
-                target_y = 1210
-            elif last_ball_y > 950:
-                target_y = 610
+            if last_ball_y > 950:
+                target_y = 1060
+            elif last_ball_y < 850:
+                target_y = 760
             else:
                 target_y = 910
         else:
@@ -382,9 +382,8 @@ def striker(
         direction = math.degrees(math.atan2(vector[1], vector[0]))
         dx, dy = target_x - x_pos, target_y - y_pos
         distance = math.hypot(dx, dy)
-        if distance > 10:
-            speed = 500
-        else:
+        speed = max(400, min(1200, distance * 2))
+        if distance < 10:
             speed = 0
         rotation = 0
         kick = False

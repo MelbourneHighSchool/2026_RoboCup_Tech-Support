@@ -1801,6 +1801,7 @@ elif log_provided:
 else:
     ball_x = pitch.get_width() // 2
     ball_y = pitch.get_height() // 2
+    last_ball_y = ball_y
     ball_vx = 0.0
     ball_vy = 0.0
 
@@ -1861,6 +1862,8 @@ else:
                     ball_vy = 0.0
 
         ball_on_field = ball_x is not None and ball_y is not None
+        if ball_on_field:
+            last_ball_y = ball_y
         manual_keys = pygame.key.get_pressed() if any(bot.manual for bot in bots) else None
 
         bot_states = []
@@ -1964,6 +1967,16 @@ else:
                         for other_x, other_y in controller_enemy_bot_positions
                     ]
 
+                controller_last_ball_y = last_ball_y
+                if controller_inverted and controller_last_ball_y is not None:
+                    controller_last_ball_y = pitch.get_height() - controller_last_ball_y
+                controller_kwargs = {
+                    "state": bot.state,
+                    "friendly_bot_positions": controller_friendly_bot_positions,
+                    "enemy_bot_positions": controller_enemy_bot_positions,
+                }
+                if bot.controller is striker:
+                    controller_kwargs["last_ball_y"] = controller_last_ball_y
                 direction, speed, rotation, bot.state, kick_state, dribbler_state = bot.controller(
                     controller_x,
                     controller_y,
@@ -1971,9 +1984,7 @@ else:
                     controller_ball_x,
                     controller_ball_y,
                     controller_ball_captured,
-                    state=bot.state,
-                    friendly_bot_positions=controller_friendly_bot_positions,
-                    enemy_bot_positions=controller_enemy_bot_positions,
+                    **controller_kwargs,
                 )
                 if controller_inverted:
                     direction = invert_angle_deg(direction)
