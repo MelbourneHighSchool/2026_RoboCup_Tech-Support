@@ -3,7 +3,8 @@
 
 Each input video becomes one clip with a new monotonic ``output<N>`` prefix so
 ``export_label_studio.py`` can split train/val by clip. Source video filenames
-are not used in the output names.
+are not used in the output names. Pi H.264 recordings in ``.ts`` containers
+are supported alongside MP4 and the other common video formats.
 
 Example:
   python training/extract_video_frames.py /path/to/videos
@@ -25,7 +26,7 @@ import cv2
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PHOTOS_DIR = REPO_ROOT / "label-studio-data" / "Photos"
-VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".ts"}
 _CLIP_FRAME_NAME = re.compile(r"^output(\d*)_(\d+)\.(?:png|jpe?g)$", re.IGNORECASE)
 
 
