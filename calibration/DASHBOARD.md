@@ -76,11 +76,13 @@ The **Camera** panel also contains goal HSV thresholds, blue/yellow masks and th
 contour preview. Use **Pick a pixel** on the main preview for exact source colours.
 
 In **Break beam & kicker**, take control and select **Monitor break beam** for live
-blocked/clear readings. **Arm kicker**, then **Fire once**, sends a fixed 20 ms
-pulse on the configured kicker pin and disarms afterwards. The physical pause
+blocked/clear readings. **Arm kicker**, then **Fire once** sends the configured
+kicker command and disarms afterwards. With `USE_PCB = False`, it sends a fixed
+20 ms pulse on the configured GPIO pin; with `USE_PCB = True`, it sends the PCB
+kick command over I2C. The physical pause
 switch must be released; Stop or loss of control cancels pending firing. The
 500 ms cooldown matches the game controller. These GPIO tools do not require
-motor calibration or localisation. The dashboard owns the GPIO pins while in use;
+motor calibration or localisation. The dashboard owns the relevant hardware while in use;
 run it separately from the game controller and other hardware tools.
 
 **Manual drive** provides robot-relative translation with arrow keys or the

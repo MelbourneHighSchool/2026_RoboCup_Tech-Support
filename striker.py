@@ -41,6 +41,8 @@ PITCH_WIDTH = 1820
 BALL_HIDING_LINE_THRESHOLD = 140
 # Set to False to disable the ball-hiding strategy.
 BALL_HIDING_ENABLED = True
+# Set to False to enable ball hiding even when no enemy robot is detected
+BALL_HIDING_GOALIE_CHECK = True
 # Distance to goal (mm) at which ball hiding starts / ends.
 BALL_HIDING_START_DIST = 900
 BALL_HIDING_END_DIST = 600
@@ -61,7 +63,7 @@ def wrap_angle_deg(angle):
 
 def enemy_bots_ahead(bot_x, enemy_bot_positions):
     """Checks if any enemy bot is ahead of the bot."""
-    return not any(
+    return any(
         enemy_bot_x > bot_x
         for enemy_bot_x, *_ in enemy_bot_positions or ()
     )
@@ -441,7 +443,7 @@ def striker(
         if (
             BALL_HIDING_ENABLED
             and not ball_hiding
-            and not enemy_bots_ahead(x_pos, enemy_bot_positions)
+            and (not BALL_HIDING_GOALIE_CHECK or enemy_bots_ahead(x_pos, enemy_bot_positions))
             and dist_to_goal >= BALL_HIDING_START_DIST
         ):
             ball_hiding = True

@@ -20,6 +20,8 @@ This repo was created to share our code to provide inspiration to other teams. H
 
 `legacy/` contains old code which is no longer used, such as the python movement controller (this was ported to a C++ Hardware Controller in `lib/`)
 
+`calibration_dashboard.py` includes various tests and calibration functions bundled into one dashboard which can be accessed through http
+
 The below files are the most important, and are annotated extensively:
 
 `config.txt` includes the settings that vary between bots. An example can be found in `example_config.txt`
@@ -34,6 +36,15 @@ The below files are the most important, and are annotated extensively:
 
 The models themselves are stored in `open-soccer-detect-n_hailo_model` and `open-soccer-detect-s_hailo_model`. These are trained models based on YOLO26n and YOLO26s respectively, and quantised to be run on a Raspberry Pi AI HAT.
 
+## Strategy
+
+### Localisation
+One of the key parts of our robot's strategy is localisation. Using our lidar and line sensor, the code is always aware of the robot's position in the field. This allows us to derive the position of the ball and other bots in the field, which is used to make strategy decisions such as not chasing the ball if it has gone out of bounds, or ball hiding, which is discussed more in the next section. To read more about how we achieved localisation, read [LOCALISATION.md](lib/LOCALISATION.md).
+
+### Ball Hiding
+Our striker employs a strategy known as 'ball hiding' in order to score more effectively against enemy robots. When the striker captures a ball on its half of the field, if it tries to make its way up the field close enough to score, the enemy goalie would have already blocked it. To avoid this problem, if the striker detects an enemy goalie, it will activate ball hiding. This is when it turns away from the goal, facing towards the closest side wall and moves towards the side line, while holding the ball. Then, it moves along this line, while continuing to face the wall. This hides the ball from the goalie's vision, so it will not be able to track it until the moment the striker gets close enough to turn towards the goal and score. Ball hiding can be configured by adjusting the constants at the top of `striker.py`.
+To see a demo of ball hiding in the simulator, run `python simulate.py --team1 s --team2 d --vision`. This creates a simulated match between the striker and defence controllers with simulated vision enabled.
+
 ## AI Declaration
 
 Generative AI tools such as GitHub Copilot, Codex and Cursor were used to assist in writing the code in this repo. We believe in using AI to enhance human development, not replace it, so in accordance with the MHS Robotics Club Generative AI policy, all essential code (such as `main.py`, `defence.py`, etc) has been either written or extensively verified by our team. However, test code (such as the calibration dashboard) and code used for model training was mostly written by AI, as it is not used during gameplay.
@@ -45,6 +56,3 @@ If you would like to contact us please use the following contact details:
 Arhan - Email: [arhan@arhan.tech](mailto:arhan@arhan.tech) Discord: @arbusam
 
 Kanishk - Discord: @kansar_1
-## Calibration dashboard
-
-Run `.venv/bin/python calibration_dashboard.py` on the Pi and open `http://<pi-ip>:8080` from another device on the LAN. Includes live ball/bot detections, distance and motor calibration, goal masks/HSV tuning, pixel picking, and localisation/target-driving diagnostics. See [the run guide and Pi acceptance checks](calibration/DASHBOARD.md).

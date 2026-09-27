@@ -9,17 +9,21 @@
 #include <stdexcept>
 #include <vector>
 
+// A line segment, defined by its start and end points.
 struct Segment {
     float x1;
     float y1;
     float x2;
     float y2;
 };
+// The readings from the PCB line sensor 
 static LocLineReadings g_line_readings;
+// Whether to use the PCB line sensor for localisation. Default to false here, but it can be set to true from other files, such as main.py.
 static bool g_use_pcb = false;
 static double g_last_line_used_timestamp = 0;
 static void apply_pending_line_readings_locked(double now);
 
+// A localisation particle, see LOCALISATION.md for more details.
 struct Particle {
     float x;
     float y;
@@ -27,21 +31,24 @@ struct Particle {
     float weight;
 };
 
+// Predicted wall/goal hit, including distance and normal vector.
 struct PredictedHit {
     float range_mm;
     float nx;
     float ny;
 };
 
+// A real lidar observation
 struct Observation {
     float angle_deg;
     float distance_mm;
     float weight;
-    bool hit;
-    double time_s = -1;
+    bool hit; // Whether the lidar beam returned
+    double time_s = -1; // The time the observation was made
     float origin_x = 0, origin_y = 0;
 };
 
+// Used for updating particles between lidar scans.
 struct OdometryStep {
     double start_time_s;
     double end_time_s;
@@ -50,12 +57,14 @@ struct OdometryStep {
     float omega_deg_s;
 };
 
-static std::vector<Segment> g_static_segments;
-static std::vector<Particle> g_particles;
-static std::deque<OdometryStep> g_odometry_history;
-static std::mutex g_loc_mutex;
-static std::mt19937 g_rng(42);
-static motion::History g_motion;
+// Global Variables
+
+static std::vector<Segment> g_static_segments; // Holds the line segments which represent the physical walls and goals.
+static std::vector<Particle> g_particles; // Holds the current particles.
+static std::deque<OdometryStep> g_odometry_history; // Recent odometry steps.
+static std::mutex g_loc_mutex; // Mutex for localisation state.
+static std::mt19937 g_rng(42); // Random number generator.
+static motion::History g_motion; // History of actual motion data (wheel measurements and IMU data)
 static bool g_timed_motion = false;
 static std::uint64_t g_motion_epoch = 0;
 static double g_pose_time = 0, g_replay_time = -1;
@@ -63,66 +72,111 @@ static std::string g_deskew_mode = "off";
 static double g_mount_forward = 0, g_mount_left = 0, g_mount_yaw = 0;
 static LocDeskewStatus g_deskew_status;
 
-static float g_pitch_x = 2430.0f;
-static float g_pitch_y = 1820.0f;
-static LocPose g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
+static float g_pitch_x = 2430.0f; // The length of the pitch
+static float g_pitch_y = 1820.0f; // The width of the pitch
+static LocPose g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false}; // The current estimated pose of the robot.
 static LocScanCorrection g_last_scan_correction = {};
-static bool g_started = false;
-static bool g_ready = false;
+static bool g_started = false; // Whether the localisation system has started.
+static bool g_ready = false; // Whether localisation has acquired a confident pose. This normally takes a few lidar scans.
 static float g_imu_yaw_deg = 0.0f;
 static bool g_imu_yaw_valid = false;
 static bool g_scan_quality_baseline_valid = false;
 static float g_scan_quality_baseline = 0.0f;
 static float g_last_scan_quality = 0.0f;
 static int g_bad_scan_count = 0;
-static float g_recovery_fraction = 0.0f;
+static float g_recovery_fraction = 0.0f; // The fraction of particles to replace with new particles during recovery.
 
-static constexpr float COORD_SIGMA = 30.0f;
-static constexpr float COORD_EPS = 1e-9f;
-static constexpr float INLIER_THRESH = 80.0f;
-static constexpr float CONF_ACQUIRE_THRESHOLD = 0.5f;
-static constexpr float CONF_TRACK_THRESHOLD = 0.35f;
+static constexpr float COORD_SIGMA = 30.0f; // mm, the base standard deviation between a predicted and real lidar scan.
+static constexpr float COORD_EPS = 1e-9f; // A small epsilon for calculations
+static constexpr float INLIER_THRESH = 80.0f; // mm, if a lidar ray is more than this distance from the predicted hit, it is considered an outlier. This could be another bot, hand, etc.
+static constexpr float CONF_ACQUIRE_THRESHOLD = 0.5f; // Confidence required to accept a new pose.
+static constexpr float CONF_TRACK_THRESHOLD = 0.35f; // If confidence drops below this, the pose is no longer considered valid.
 static constexpr int PARTICLE_COUNT = 1000;
-static constexpr int MIN_OBSERVATION_COUNT = 30;
-static constexpr int MIN_HIT_COUNT = 8;
-static constexpr int ANGLE_BIN_COUNT = 180;  // 2° bins over 360°
+static constexpr int MIN_OBSERVATION_COUNT = 30; // A scan requires at least this many observations to be valid.
+static constexpr int MIN_HIT_COUNT = 8; // A pose requires at least this many lidar hits (not including misses) to be valid.
+static constexpr int ANGLE_BIN_COUNT = 180;  // Only saves one lidar observeration every 2°.
 static constexpr float ANGLE_BIN_DEG = 360.0f / ANGLE_BIN_COUNT;
-static constexpr float TRANS_NOISE_MM = 8.0f;
-// sqrt(seconds): moving at 500 mm/s gives about 47.5 mm of standard
-// deviation per axis over 100 ms. Stationary diffusion remains 8 mm/sqrt(s).
-static float g_speed_noise_coefficient = 0.30f;
-static constexpr float YAW_NOISE_DEG = 2.0f;
-// Absolute IMU yaw is accurate enough to strongly constrain MCL heading.
-// Keep initialization especially tight so particles search position rather
-// than wasting samples across headings that the IMU has already ruled out.
-static constexpr float YAW_PRIOR_SIGMA_DEG = 8.0f;
-static constexpr float YAW_INIT_SIGMA_DEG = 5.0f;
-static constexpr float EXPLORATION_FRACTION = 0.02f;
-static constexpr float RECOVERY_FRACTION_LOW = 0.20f;
-static constexpr float RECOVERY_FRACTION_HIGH = 0.50f;
+static constexpr float TRANS_NOISE_MM = 8.0f; // How much translation noise to add to particles.
+static float g_speed_noise_coefficient = 0.30f; // mutable coefficient to add more translation noise when moving faster.
+static constexpr float YAW_NOISE_DEG = 2.0f; // How much yaw noise to add to particles
+static constexpr float YAW_PRIOR_SIGMA_DEG = 8.0f; // How strongly to constrain particles with the IMU yaw during scanning. Lower numbers trust IMU more.
+static constexpr float YAW_INIT_SIGMA_DEG = 5.0f; // During particle initialisation, how strongly to constrain particles with the IMU yaw.
+static constexpr float EXPLORATION_FRACTION = 0.02f; // Fraction of particles to introduce random 'exploration' particles. Used to correct a far off pose.
+
+// Recovery parameters
+static constexpr float RECOVERY_QUALITY_DROP = 1.5f; // How much lower quality must be compared to baseline to consititute a 'bad scan'.
 static constexpr int RECOVERY_LOW_BAD_SCANS = 2;
 static constexpr int RECOVERY_HIGH_BAD_SCANS = 5;
-static constexpr int RECOVERY_RESET_BAD_SCANS = 10;
-static constexpr float RECOVERY_QUALITY_DROP = 1.5f;
+static constexpr float RECOVERY_FRACTION_LOW = 0.20f; // Fraction of particles to replace with new particles after RECOVERY_LOW_BAD_SCANS.
+static constexpr float RECOVERY_FRACTION_HIGH = 0.50f; // Fraction of particles to replace with new particles after RECOVERY_HIGH_BAD_SCANS.
+static constexpr int RECOVERY_RESET_BAD_SCANS = 10; // After this many bad scans, the reset localisation.
 static constexpr float QUALITY_BASELINE_RISE_ALPHA = 0.20f;
 static constexpr float QUALITY_BASELINE_FALL_ALPHA = 0.002f;
-static constexpr float ESS_RESAMPLE_FRACTION = 0.5f;
-static constexpr double ODOMETRY_HISTORY_S = 2.0;
+static constexpr float ESS_RESAMPLE_FRACTION = 0.5f; // The Effective Sample Size (ESS) represents how concentrated the particle weights are. If it drops below this fraction of the total particle count, trigger resampling.
+static constexpr double ODOMETRY_HISTORY_S = 2.0; // seconds, how long to retain odometry history
 
-static float wrap_angle_deg(float angle);
-static float rand_normal(float stddev);
+// Incidence model: |cos| below this is treated as fully grazing / expected miss. Not getting lidar beams back that would hit at extreme angles should not excessively penalise a pose.
+static constexpr float GRAZING_COS = 0.25f;
+static constexpr float HEADON_COS = 0.70f; // Inversely, a |cos| above this is treated as a head on hit, so it should be returned.
+static constexpr float INCIDENCE_SIGMA_FLOOR = 0.20f;
+static constexpr float OUTLIER_MIX = 0.05f; // Avoids outliers (such as other bots) from killing a pose.
+static constexpr float MISS_EXPECTED_P = 0.85f; // How likely a lidar beam will not return if it is fully grazing.
+static constexpr float MISS_UNEXPECTED_P = 0.08f; // How likely a lidar beam will not return if it is head on.
+static constexpr float RELIABLE_HIT_RANGE_MM = 3500.0f; // Beyond this distance, it becomes less likely that a lidar beam will return (too far for normal pitch dimensions).
 
+// How quickly confidence decreases as particles spread out
+static constexpr float SPREAD_X_SCALE_MM = 120.0f;
+static constexpr float SPREAD_Y_SCALE_MM = 120.0f;
+static constexpr float SPREAD_YAW_SCALE_DEG = 15.0f;
+
+// Physical goal walls. The lidar beam could hit the goal back or side walls, but not the front crossbar.
+static constexpr float GOAL_LEFT_BACK_X = 226.0f;
+static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
+static constexpr float GOAL_LEFT_FRONT_X = 300.0f;
+static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
+static constexpr float GOAL_TOP_Y = 685.0f;
+static constexpr float GOAL_BOTTOM_Y = 1135.0f;
+static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
+// Goal interiors occupy only about 1.5% of the map. Pure uniform sampling leaves too few particles there for reliable acquisition or recovery.
+// To account for that, this increases the amount of particles in a goal during resampling.
+static constexpr float GOAL_PARTICLE_FRACTION = 0.10f;
+
+// Wraps angles to [-180, 180) degrees
+static float wrap_angle_deg(float angle) {
+    while (angle >= 180.0f) angle -= 360.0f;
+    while (angle < -180.0f) angle += 360.0f;
+    return angle;
+}
+
+// Generates a random number from a uniform distribution, between a provided low and high
+static float rand_uniform(float lo, float hi) {
+    std::uniform_real_distribution<float> dist(lo, hi);
+    return dist(g_rng);
+}
+
+// Generates a random number from a normal distribution, centred on 0 with a provided standard deviation
+static float rand_normal(float stddev) {
+    std::normal_distribution<float> dist(0.0f, stddev);
+    return dist(g_rng);
+}
+
+// Returns the current time in seconds. Since it is monotonic, it can never go backward but it has an arbitrary starting point
 static double monotonic_time_s() {
     if (g_replay_time >= 0) return g_replay_time;
     return std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
-                               float omega_deg_s, float dt_s, bool add_noise) {
+// Propagate a particle between lidar scans using odometry.
+static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s, bool add_noise) {
+    // Inputs: Initial particle, odometry translational and angular velocity, dt and whether to add random noise
+
+    // Create a Transform next which represents how much this particle has translated
     motion::Transform next;
     next.yaw = particle.yaw_deg;
     motion::advance(next, vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
+
+    // Retrieve dx and dy from next, then calculate noise standard deviation based on speed
     const float dx = next.x, dy = next.y;
     float noise_dt_scale = std::sqrt(std::max(dt_s, 0.0f));
     const float translation_sigma = add_noise
@@ -131,6 +185,7 @@ static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
             * noise_dt_scale
         : 0.0f;
 
+    // Translate and rotate the particle, applying random noise using the rand_normal
     particle.x = std::min(std::max(
         particle.x + dx
         + (add_noise ? rand_normal(translation_sigma) : 0.0f),
@@ -144,65 +199,31 @@ static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
         + (add_noise ? rand_normal(YAW_NOISE_DEG * noise_dt_scale) : 0.0f));
 }
 
+// In order to find where a particle would have been at a certain time, propogate the particle in reverse.
 static void rewind_particle(Particle& particle, const OdometryStep& step,
                             float dt_s) {
     propagate_particle(particle, step.vx_mm_s, step.vy_mm_s,
                        step.omega_deg_s, -dt_s, false);
 }
 
-// Incidence model: |cos| below this is treated as fully grazing / expected miss.
-static constexpr float GRAZING_COS = 0.25f;       // ~75.5° from normal
-static constexpr float HEADON_COS = 0.70f;        // ~45.5° from normal
-static constexpr float INCIDENCE_SIGMA_FLOOR = 0.20f;
-static constexpr float OUTLIER_MIX = 0.05f;
-static constexpr float MISS_EXPECTED_P = 0.85f;
-static constexpr float MISS_UNEXPECTED_P = 0.08f;
-static constexpr float RELIABLE_HIT_RANGE_MM = 3500.0f;
-static constexpr float SPREAD_X_SCALE_MM = 120.0f;
-static constexpr float SPREAD_Y_SCALE_MM = 120.0f;
-static constexpr float SPREAD_YAW_SCALE_DEG = 15.0f;
-
-// Physical goal walls
-static constexpr float GOAL_LEFT_BACK_X = 226.0f;
-static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
-static constexpr float GOAL_LEFT_FRONT_X = 300.0f;
-static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
-static constexpr float GOAL_TOP_Y = 685.0f;
-static constexpr float GOAL_BOTTOM_Y = 1135.0f;
-static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
-// Goal interiors occupy only about 1.5% of the map. Pure uniform sampling
-// leaves too few particles there for reliable acquisition or recovery.
-static constexpr float GOAL_PARTICLE_FRACTION = 0.20f;
-
-static float wrap_angle_deg(float angle) {
-    while (angle >= 180.0f) angle -= 360.0f;
-    while (angle < -180.0f) angle += 360.0f;
-    return angle;
-}
-
+// Wrap an angle to [0, 360) degrees
 static float normalize_angle_360(float angle) {
     angle = std::fmod(angle, 360.0f);
     if (angle < 0.0f) angle += 360.0f;
     return angle;
 }
 
-static float rand_uniform(float lo, float hi) {
-    std::uniform_real_distribution<float> dist(lo, hi);
-    return dist(g_rng);
-}
-
-static float rand_normal(float stddev) {
-    std::normal_distribution<float> dist(0.0f, stddev);
-    return dist(g_rng);
-}
-
+// Clamp a float between 0 and 1
 static inline float clamp01(float v) {
     return std::max(0.0f, std::min(1.0f, v));
 }
 
 // Visibility in [0,1]: 1 = expect a reliable return, 0 = expect a miss.
 static inline float wall_visibility(float abs_cos_inc, float range_mm) {
+    // Check how likely it is to return based on its predicted angle of incidence.
     float incidence = clamp01((abs_cos_inc - GRAZING_COS) / (HEADON_COS - GRAZING_COS));
+
+    // Check how likely it is to return based on its predicted distance.
     float range_factor = 1.0f;
     if (range_mm > RELIABLE_HIT_RANGE_MM) {
         range_factor = clamp01(
@@ -211,6 +232,7 @@ static inline float wall_visibility(float abs_cos_inc, float range_mm) {
     return incidence * range_factor;
 }
 
+// Determine if a given ray and line segment intersect. A ray is defined by a point and a unit direction vector.
 static inline bool ray_segment_intersection(float px, float py,
                                             float ux, float uy,
                                             const Segment& seg,
@@ -218,6 +240,7 @@ static inline bool ray_segment_intersection(float px, float py,
     float sx = seg.x2 - seg.x1;
     float sy = seg.y2 - seg.y1;
 
+    // If the line segment and ray are parallel, return false
     float denom = ux * sy - uy * sx;
     if (std::fabs(denom) <= COORD_EPS) {
         return false;
@@ -229,8 +252,9 @@ static inline bool ray_segment_intersection(float px, float py,
     float t = (qpx * sy - qpy * sx) / denom;
     float u = (qpx * uy - qpy * ux) / denom;
 
+    // Check if the intersection point is after the ray's starting point and within the line segments endpoints.
     if (t > COORD_EPS && u >= -COORD_EPS && u <= 1.0f + COORD_EPS) {
-        *out_t = t;
+        *out_t = t; // Save the distance along the ray where it intersects the line segment.
         return true;
     }
     return false;
