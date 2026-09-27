@@ -201,8 +201,6 @@ class Hardware:
             self.break_beam = Breakbeam(load_config().break_beam_pin)
 
     def _kick(self, cancel):
-        import digitalio
-
         from lib.config import load_config
         from lib.switch import Switch
 
@@ -215,6 +213,18 @@ class Hardware:
             return
         if time.monotonic() - self.last_kick < 0.5:
             raise ValueError("Kicker is cooling down")
+        if self.use_pcb:
+            from lib.hardware_controller import PcbSensorReader
+
+            if cancel.is_set():
+                return
+            PcbSensorReader().kick()
+            self.last_kick = time.monotonic()
+            self.notify("PCB kicker command sent")
+            return
+
+        import digitalio
+
         pin = digitalio.DigitalInOut(config.kicker_pin)
         try:
             pin.switch_to_input(pull=digitalio.Pull.DOWN)

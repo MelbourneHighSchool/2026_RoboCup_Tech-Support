@@ -9,12 +9,13 @@ namespace py = pybind11;
 using hardware::HardwareController;
 
 namespace {
-// PCB sensor/LED interface: owns no motors, IMU, GPIO, or kick interface.
+// Standalone PCB interface: owns no motors, IMU, or GPIO.
 class PcbSensorReader {
 public:
     explicit PcbSensorReader(const std::string& device) : wire_(device), pcb_(wire_) {}
     std::array<uint8_t, PCB_SENSOR_COUNT> read_sensors() { return pcb_.read_sensors(); }
     void set_brightness(int level) { pcb_.set_brightness(level); }
+    void kick() { pcb_.kick(); }
 private:
     LinuxWire wire_;
     hardware::Pcb pcb_;
@@ -73,6 +74,8 @@ PYBIND11_MODULE(hardware_controller, module) {
         .def("set_brightness", &PcbSensorReader::set_brightness,
              py::arg("level"), py::call_guard<py::gil_scoped_release>())
         .def("read_sensors", &PcbSensorReader::read_sensors,
+             py::call_guard<py::gil_scoped_release>())
+        .def("kick", &PcbSensorReader::kick,
              py::call_guard<py::gil_scoped_release>());
     module.doc() = "Native hardware controller: motors, BNO08x IMU and GPIO kicker";
     py::register_exception<hardware::MotorCommunicationError>(module, "MotorCommunicationError");
