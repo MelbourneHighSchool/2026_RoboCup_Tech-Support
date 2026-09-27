@@ -26,6 +26,7 @@ from calibration.ball_distance import (
 )
 from lib.config import load_camera_bearing_offset
 from lib.hailo_ball import HailoBallDetector
+from lib.sensor_timing import exposure_monotonic
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ class Camera:
             self._bearing = None
             self._distance = None
             self._bot_measurements = []
+            self._scene_snapshot = None
             self._frame_id = 0
             self._measurement_lock = threading.Lock()
             self._capture_started = False
@@ -153,6 +155,7 @@ class Camera:
             self._latest_seq = 0
             self._latest_sensor_timestamp_ns = None
             self._latest_capture_monotonic = None
+            self._latest_exposure_monotonic = None
             self._last_detection = None
             self._infer_stop = threading.Event()
             self._infer_thread = None
@@ -325,6 +328,17 @@ class Camera:
                 list(self._bot_measurements),
             )
 
+    def get_scene_snapshot(self):
+        """Owned lightweight inference metadata; never copies image pixels.
+
+        timestamp_s is the exposure midpoint on CLOCK_MONOTONIC, or None if
+        libcamera timing is unavailable. The legacy tuple API is unchanged.
+        """
+        with self._measurement_lock:
+            if self._is_shutting_down or self._scene_snapshot is None:
+                return None
+            return copy.deepcopy(self._scene_snapshot)
+
     def set_callback(self, callback_function):
         self.user_callback = callback_function
         self.picam2.pre_callback = self._proxy_callback
@@ -455,6 +469,7 @@ class Camera:
                     frame = infer_buf
                     last_seq = seq
                     sensor_timestamp_ns = self._latest_sensor_timestamp_ns
+                    exposure_time = self._latest_exposure_monotonic
                     capture_time = getattr(self, "_latest_capture_monotonic", None) or time.monotonic()
             if frame is None:
                 time.sleep(0.0005)
@@ -464,6 +479,7 @@ class Camera:
             detection, bot_detections = self._detect_scene(inference_frame)
             frame_h, frame_w = frame.shape[:2]
             bot_measurements = []
+            bot_observations = []
             if detection is not None:
                 new_bearing, new_distance = self._polar_from_detection(
                     detection, frame_w, frame_h
@@ -487,6 +503,9 @@ class Camera:
                 if bot_bearing is None:
                     continue
                 bot_measurements.append((bot_bearing, bot_distance))
+                bot_observations.append({"bearing_deg": bot_bearing,
+                                         "distance_mm": bot_distance,
+                                         "confidence": bot_det["confidence"]})
 
             with self._measurement_lock:
                 self._last_detection = detection
@@ -495,6 +514,11 @@ class Camera:
                 self._bot_measurements = bot_measurements
                 self._frame_id += 1
                 inference_sequence = self._frame_id
+                self._scene_snapshot = {
+                    "frame_id": inference_sequence, "timestamp_s": exposure_time,
+                    "ball_bearing_deg": new_bearing, "ball_distance_mm": new_distance,
+                    "bots": bot_observations,
+                }
                 if getattr(self, "diagnostics_enabled", False):
                     self._diagnostic_snapshot = {
                         "frame": frame.copy(),
@@ -627,6 +651,7 @@ class Camera:
                     metadata = request.get_metadata()
                     sensor_timestamp_ns = metadata.get("SensorTimestamp")
                     capture_monotonic = time.monotonic()
+                    exposure_time = exposure_monotonic(metadata)
                     if (
                         sensor_timestamp_ns is not None
                         and self._first_sensor_timestamp_ns is None
@@ -647,6 +672,7 @@ class Camera:
                         self._latest_seq += 1
                         self._latest_sensor_timestamp_ns = sensor_timestamp_ns
                         self._latest_capture_monotonic = capture_monotonic
+                        self._latest_exposure_monotonic = exposure_time
 
                     with self._measurement_lock:
                         detection = self._last_detection

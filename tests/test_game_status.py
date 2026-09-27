@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from lib.ball_possession import BallPossessionTracker, ball_is_near_bot
+from lib.bot_fusion import BotRangeFusion
 from lib.game_status import GameStatus, ImuPause, ProgressHealth
 
 USE_PCB = False
@@ -181,12 +182,12 @@ class MainCameraFallbackTests(unittest.TestCase):
                        and any(isinstance(child, ast.Assign)
                                and isinstance(child.value, ast.Call)
                                and isinstance(child.value.func, ast.Attribute)
-                               and child.value.func.attr == "get_scene_measurement"
+                               and child.value.func.attr == "get_scene_snapshot"
                                for child in node.body))
         start = next(i for i, node in enumerate(running.body)
                      if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
                      and isinstance(node.value.func, ast.Attribute)
-                     and node.value.func.attr == "get_scene_measurement")
+                     and node.value.func.attr == "get_scene_snapshot")
         end = next(i for i, node in enumerate(running.body)
                    if isinstance(node, ast.If) and "bot_mode" in ast.unparse(node.test))
         cls.section = compile(ast.Module(body=running.body[start:end], type_ignores=[]),
@@ -206,11 +207,17 @@ class MainCameraFallbackTests(unittest.TestCase):
         peer = SimpleNamespace(send=lambda _: None, receive=lambda: peer_ball)
         values = {
             "camera": SimpleNamespace(
-                get_scene_measurement=lambda: (5, 0, ball_distance, [(0, 900)])
+                get_scene_snapshot=lambda: {
+                    "frame_id": 5, "timestamp_s": 10, "ball_bearing_deg": 0,
+                    "ball_distance_mm": ball_distance,
+                    "bots": [{"bearing_deg": 0, "distance_mm": 900, "confidence": 0.9}]}
+
             ),
             "status": SimpleNamespace(camera_ready=ready), "last_camera_frame_id": 4,
             "last_camera_bot_positions": [(999, 999)], "x_pos": 100, "y_pos": 200,
-            "yaw": yaw, "math": math, "time": SimpleNamespace(time=lambda: 10),
+            "yaw": yaw, "math": math,
+            "time": SimpleNamespace(time=lambda: 10, monotonic=lambda: 10),
+            "bot_fusion": BotRangeFusion(), "lidar": SimpleNamespace(),
             "last_ball_x": 300, "last_ball_y": 400, "ball_dx": 10, "ball_dy": 0,
             "last_ball_update": last_update, "BALL_TIMEOUT": 0.5,
             "break_beam": SimpleNamespace(read=lambda: captured), "peer": peer,

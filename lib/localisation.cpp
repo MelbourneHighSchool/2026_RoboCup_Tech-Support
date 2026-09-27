@@ -737,6 +737,57 @@ void loc_configure_deskew(const std::string& mode, double forward, double left, 
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_deskew_mode=mode; g_mount_forward=forward; g_mount_left=left; g_mount_yaw=yaw;
 }
+LocFusionContext loc_fusion_context(const std::vector<LocScanPoint>& points,
+                                   double reference_time_s, double max_delta_s) {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    LocFusionContext out;
+    const double now = monotonic_time_s();
+    if (!std::isfinite(reference_time_s) || !std::isfinite(max_delta_s) ||
+        max_delta_s <= 0 || reference_time_s <= 0 || reference_time_s > now ||
+        now-reference_time_s > 0.25) { out.reason="stale_camera"; return out; }
+    if (!g_pose.ok || g_pose.confidence < 0.7f) {
+        out.reason="uncertain_pose"; return out;
+    }
+    motion::Transform current;
+    if (!g_timed_motion || g_pose_time <= 0 || now-g_pose_time > 0.25 ||
+        !g_motion.relative(reference_time_s,g_pose_time,true,current)) return out;
+    // Rewind the corrected pose; never apply present heading to an old bearing.
+    // Motion history is cleared when the hardware's yaw epoch changes.
+    out.pose = g_pose;
+    out.pose.yaw_deg = wrap_angle_deg(g_pose.yaw_deg-current.yaw);
+    const double c=std::cos(out.pose.yaw_deg*motion::RAD);
+    const double s=std::sin(out.pose.yaw_deg*motion::RAD);
+    out.pose.x -= c*current.x-s*current.y;
+    out.pose.y -= s*current.x+c*current.y;
+    for (const auto& p : points) {
+        if (!p.hit || p.quality < 5 || !std::isfinite(p.angle_deg) ||
+            !std::isfinite(p.distance_mm) || p.distance_mm < 80 || p.distance_mm > 6000 ||
+            !std::isfinite(p.time_s) || p.time_s <= 0 ||
+            std::abs(p.time_s-reference_time_s) > max_delta_s) continue;
+        motion::Transform beam;
+        if (!g_motion.relative(reference_time_s,p.time_s,true,beam)) {
+            out.points.clear(); out.reason="missing_motion"; return out;
+        }
+        const double bc=std::cos(beam.yaw*motion::RAD), bs=std::sin(beam.yaw*motion::RAD);
+        const double angle=(p.angle_deg+g_mount_yaw+beam.yaw)*motion::RAD;
+        const double x=beam.x+bc*g_mount_forward+bs*g_mount_left+p.distance_mm*std::cos(angle);
+        const double y=beam.y+bs*g_mount_forward-bc*g_mount_left+p.distance_mm*std::sin(angle);
+        const double wx=out.pose.x+c*x-s*y, wy=out.pose.y+s*x+c*y;
+        double distance=std::min(std::min(wx,double(g_pitch_x)-wx),
+                                 std::min(wy,double(g_pitch_y)-wy));
+        for (const auto& seg : g_static_segments) {
+            const double dx=seg.x2-seg.x1, dy=seg.y2-seg.y1;
+            const double length2=dx*dx+dy*dy;
+            const double t=length2 > 0 ? std::max(0.0,std::min(1.0,
+                ((wx-seg.x1)*dx+(wy-seg.y1)*dy)/length2)) : 0;
+            distance=std::min(distance,std::hypot(wx-seg.x1-t*dx,wy-seg.y1-t*dy));
+        }
+        out.points.push_back({x,y,p.time_s,double(p.quality),distance});
+    }
+    out.reason=out.points.empty() ? "no_timed_returns" : "ok";
+    return out;
+}
+
 LocDeskewStatus loc_get_deskew_status() {
     std::lock_guard<std::mutex> lock(g_loc_mutex); return g_deskew_status;
 }

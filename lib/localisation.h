@@ -45,6 +45,17 @@ struct LocPose {
     bool ok;
 };
 
+// Full-resolution endpoints at reference time, local x forward / y right.
+struct LocFusionContext {
+    std::string reason = "missing_motion";
+    LocPose pose = {0, 0, 0, 0, false};
+    // x, y, beam acquisition time, quality, distance to nearest static segment.
+    // Negative static distance means outside the pitch.
+    std::vector<std::array<double, 5>> points;
+};
+LocFusionContext loc_fusion_context(const std::vector<LocScanPoint>& points,
+                                   double reference_time_s, double max_delta_s);
+
 struct LocParticle {
     float x;
     float y;

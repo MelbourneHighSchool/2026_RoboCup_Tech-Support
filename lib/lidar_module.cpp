@@ -41,6 +41,8 @@ using ScanPoint = LocScanPoint;
 struct CapturedScan { double time, received; std::vector<ScanPoint> points; };
 static bool g_capture_enabled=false;
 static std::deque<CapturedScan> g_capture_scans;
+// Independent of the consuming recording queue; at most eight revolutions.
+static std::deque<CapturedScan> g_scan_history;
 static unsigned long long g_capture_dropped=0;
 
 static std::vector<ScanPoint> g_latest_scan;
@@ -123,6 +125,10 @@ static void scan_thread_func() {
                     g_capture_scans.push_back({midpoint_s,scan_end_time_s,new_scan});
                 }
                 g_latest_scan = std::move(new_scan);
+                g_scan_history.push_back({midpoint_s,scan_end_time_s,g_latest_scan});
+                while (g_scan_history.size() > 8 ||
+                       (!g_scan_history.empty() && scan_end_time_s-g_scan_history.front().received > 1.0))
+                    g_scan_history.pop_front();
                 g_latest_scan_time_s = midpoint_s;
                 g_scan_ready.store(true);
                 g_scan_generation.fetch_add(1);
@@ -266,6 +272,7 @@ static void shutdown_lidar() {
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
         g_latest_scan.clear();
+        g_scan_history.clear();
         g_latest_scan_time_s = 0.0;
         g_scan_ready.store(false);
     }
@@ -543,6 +550,42 @@ static void test_mcl_reset() {
 }
 
 PYBIND11_MODULE(lidar, m) {
+    m.def("get_scan_history", [](double reference) {
+        if (!std::isfinite(reference) || reference < 0)
+            throw std::invalid_argument("reference_time_s must be finite and nonnegative");
+        std::deque<CapturedScan> scans;
+        {
+            std::lock_guard<std::mutex> lock(g_data_mutex);
+            if (reference == 0) scans=g_scan_history;
+            else {
+                const CapturedScan* best=nullptr;
+                for (const auto& scan : g_scan_history)
+                    if (scan.time > 0 && (!best || std::abs(scan.time-reference) < std::abs(best->time-reference)))
+                        best=&scan;
+                if (best) scans.push_back(*best);
+            }
+        }
+        py::list output;
+        for (const auto& scan : scans) {
+            py::dict row; py::list points;
+            for (const auto& p : scan.points)
+                points.append(py::make_tuple(p.angle_deg,p.distance_mm,p.quality,p.hit,p.time_s));
+            row["time_s"]=scan.time; row["received_s"]=scan.received; row["points"]=points;
+            output.append(row);
+        }
+        return output;
+    }, py::arg("reference_time_s")=0.0,
+       "Copy bounded scan history, or only the nearest scan when reference_time_s > 0.");
+    m.def("fusion_context", [](const py::list& points, double reference, double max_delta) {
+        const auto input=parse_scan(points);
+        LocFusionContext context;
+        { py::gil_scoped_release release; context=loc_fusion_context(input,reference,max_delta); }
+        py::dict out;
+        out["reason"]=context.reason;
+        out["pose"]=py::make_tuple(context.pose.x,context.pose.y,context.pose.yaw_deg,context.pose.confidence);
+        out["points"]=context.points;
+        return out;
+    }, py::arg("points"), py::arg("reference_time_s"), py::arg("max_delta_s")=0.05);
     m.def("configure_deskew", &loc_configure_deskew, py::arg("mode"),
           py::arg("forward_mm")=0, py::arg("left_mm")=0, py::arg("yaw_deg")=0);
     m.def("feed_motion", [](py::dict sample) {

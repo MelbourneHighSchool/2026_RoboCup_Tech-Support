@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import asdict
 
 from lib.hardware_controller import (
     HardwareController,
@@ -16,6 +17,7 @@ import defence
 import striker
 from lib import lidar, switch
 from lib.ball_possession import BallPossessionTracker, ball_is_near_bot
+from lib.bot_fusion import BotRangeFusion, FusionConfig
 from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
@@ -24,9 +26,11 @@ from lib.controller_state import encode_state
 from lib.game_status import GameStatus, ImuPause
 from lib.line_sensors import LineSensorFeed
 from lib.localisation_motion import (
+    MotionCapture,
     close_motion_capture,
     configure_motion,
     feed_timed_motion,
+    record_diagnostic_event,
     record_floor,
 )
 from lib.pcb_brightness import restore_brightness
@@ -141,7 +145,15 @@ parser.add_argument(
     action="store_true",
     help="Print logic-loop and background-thread rates once per second.",
 )
+parser.add_argument("--bot-fusion", choices=("off", "diagnostic", "active"),
+                    default="diagnostic", help="Bot ranging mode (default: diagnostic only).")
+parser.add_argument("--bot-fusion-config", metavar="JSON", help="Measured fusion tolerances.")
+parser.add_argument("--bot-fusion-log", metavar="PATH", help="New JSONL fusion diagnostic file.")
 args = parser.parse_args()
+try:
+    fusion_config = FusionConfig.load(args.bot_fusion_config)
+except (OSError, ValueError, TypeError) as exc:
+    parser.error(f"Invalid bot fusion config: {exc}")
 if args.record_session is not None and args.camera_stream:
     parser.error("--record-session cannot be combined with --camera-stream")
 
@@ -248,6 +260,16 @@ peer = None
 recording_session = None
 display = None
 startup_stage = "OTHER"
+fusion_recorder = None
+
+
+def record_bot_fusion(event):
+    record_diagnostic_event(lidar, "bot_fusion", **event)
+    if fusion_recorder is not None:
+        fusion_recorder.record({"type": "bot_fusion", **event})
+
+
+bot_fusion = BotRangeFusion(args.bot_fusion, fusion_config, record_bot_fusion)
 
 def enter_pressed():
     if not sys.stdin.isatty():
@@ -337,6 +359,10 @@ try:
     bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
     status.update(bot_mode.name, False, "STARTING", "LIDAR")
     break_beam = Breakbeam(BREAK_BEAM_PIN)
+    if args.bot_fusion_log:
+        fusion_recorder = MotionCapture(args.bot_fusion_log,
+                                        {"fusion_config": asdict(fusion_config)})
+    print(f"Bot range fusion: {args.bot_fusion}")
     startup_stage = "LIDAR"
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
@@ -562,16 +588,16 @@ try:
                 time.sleep(0.01)
                 continue
 
-            (
-                camera_frame_id,
-                ball_direction,
-                ball_distance,
-                bot_measurements,
-            ) = camera.get_scene_measurement()
+            camera_scene = camera.get_scene_snapshot()
+            if camera_scene is None:
+                camera_scene = {"frame_id": 0, "timestamp_s": None, "bots": [],
+                                "ball_bearing_deg": None, "ball_distance_mm": None}
+            camera_frame_id = camera_scene["frame_id"]
+            ball_direction = camera_scene["ball_bearing_deg"]
+            ball_distance = camera_scene["ball_distance_mm"]
             camera_healthy = status.camera_ready
             if not camera_healthy:
                 ball_direction = ball_distance = None
-                bot_measurements = []
                 last_camera_bot_positions = []
             has_new_camera_frame = camera_healthy and camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
@@ -581,19 +607,9 @@ try:
                 )
                 ball_x = x_pos + ball_distance * math.cos(math.radians(ball_global_direction)) if ball_distance is not None and ball_global_direction is not None else None
                 ball_y = y_pos + ball_distance * math.sin(math.radians(ball_global_direction)) if ball_distance is not None and ball_global_direction is not None else None
-                camera_bot_positions = []
-                for bot_bearing, bot_distance in bot_measurements:
-                    if bot_bearing is None or bot_distance is None:
-                        continue
-                    bot_global_direction = yaw + bot_bearing
-                    camera_bot_positions.append(
-                        (
-                            x_pos
-                            + bot_distance * math.cos(math.radians(bot_global_direction)),
-                            y_pos
-                            + bot_distance * math.sin(math.radians(bot_global_direction)),
-                        )
-                    )
+                camera_bot_positions = bot_fusion.project(
+                    camera_scene, lidar, (x_pos, y_pos, yaw), time.monotonic()
+                )
                 last_camera_bot_positions = camera_bot_positions
             else:
                 ball_x = None
@@ -847,6 +863,9 @@ finally:
         print(f"Warning: failed to shut down lidar cleanly: {exc}")
         if status is not None:
             status.report("LIDAR", exc)
+
+    if fusion_recorder is not None:
+        fusion_recorder.close()
 
     if display is not None:
         display.stop()
