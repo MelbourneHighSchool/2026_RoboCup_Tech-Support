@@ -260,29 +260,25 @@ static inline bool ray_segment_intersection(float px, float py,
     return false;
 }
 
+// Predicts where a ray would hit a wall or goal
 static inline PredictedHit predict_hit(float x, float y, float ux, float uy,
                                        float Lx, float Ly) {
+    // Since a ray could intersect both the goal and wall, best keeps track of the closest found hit
     PredictedHit best;
-    best.range_mm = 1e30f;
+    best.range_mm = 1e30f; // Initialised to a very large number
     best.nx = 0.0f;
     best.ny = 0.0f;
 
     auto consider = [&](float t, float nx, float ny) {
+        // Check if the distance is positve and less than the best found distance.
         if (t > COORD_EPS && t < best.range_mm) {
             best.range_mm = t;
-            // Prefer the inward-facing normal (toward the robot).
-            float toward_robot_x = -ux;
-            float toward_robot_y = -uy;
-            if (nx * toward_robot_x + ny * toward_robot_y < 0.0f) {
-                nx = -nx;
-                ny = -ny;
-            }
             best.nx = nx;
             best.ny = ny;
         }
     };
 
-    // Outer pitch walls (axis-aligned), normals pointing into the field.
+    // Check the outer walls
     if (ux < -COORD_EPS) {
         consider(-x / ux, 1.0f, 0.0f);
     } else if (ux > COORD_EPS) {
@@ -294,6 +290,7 @@ static inline PredictedHit predict_hit(float x, float y, float ux, float uy,
         consider((Ly - y) / uy, 0.0f, -1.0f);
     }
 
+    // Check all of the goal segments
     for (const auto& seg : g_static_segments) {
         float t = 0.0f;
         if (!ray_segment_intersection(x, y, ux, uy, seg, &t)) {
@@ -305,45 +302,55 @@ static inline PredictedHit predict_hit(float x, float y, float ux, float uy,
         if (len <= COORD_EPS) {
             continue;
         }
-        // Segment normal candidates; orientation fixed inside consider().
         consider(t, -sy / len, sx / len);
     }
 
     return best;
 }
 
+// Scores a potential pose based on how well it matches a lidar scan.
 static float score_pose(float x, float y, float yaw_deg,
                         const Observation* obs, int n,
                         float Lx, float Ly, float max_range_mm) {
-    float psi = yaw_deg * (float)(M_PI / 180.0);
-    const float cp=std::cos(psi), sp=std::sin(psi);
-    float log_lik = 0.0f;
+    float psi = yaw_deg * (float)(M_PI / 180.0); // Yaw in radians
+    const float cp=std::cos(psi), sp=std::sin(psi); // Store cos(psi) and sin(psi)
+    float log_lik = 0.0f; // Measures how well the pose matches the scan. It is used to update the particle's weight later.
     const float inv_max_range = 1.0f / std::max(max_range_mm, 1.0f);
 
+    // Iterate over every passed in ray
     for (int i = 0; i < n; i++) {
+        // Rotate the ray's angle by the pose's yaw
         float theta = psi + obs[i].angle_deg * (float)(M_PI / 180.0);
+        // Get the ray's unit vector
         float ux = std::cos(theta);
         float uy = std::sin(theta);
+        // Get the ray's origin, accounting for robot movement during a scan
         const float ox = x + cp*obs[i].origin_x - sp*obs[i].origin_y;
         const float oy = y + sp*obs[i].origin_x + cp*obs[i].origin_y;
+        // Get the predicted hit
         PredictedHit pred = predict_hit(ox, oy, ux, uy, Lx, Ly);
+
+        // Measure the absolute cosine of the predicted hit
+        // Large values of abs_cos indicate an 'extreme angle' where a lidar return is not expected
         float abs_cos = 0.0f;
         if (pred.range_mm < 1e29f) {
             abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
         }
         float visibility = wall_visibility(abs_cos, pred.range_mm);
 
+        // If there was a successful lidar hit
         if (obs[i].hit) {
+            // Measure the error (e) between the prediction and reality in standard deviations
+            // More extreme angles have higher standard deviations
             float sigma = COORD_SIGMA / std::max(abs_cos, INCIDENCE_SIGMA_FLOOR);
             float e = (obs[i].distance_mm - pred.range_mm) / sigma;
-            // Soft-cap extreme residuals via mixture rather than hard clamp alone.
             float p_hit = std::exp(-0.5f * e * e);
             float p = (1.0f - OUTLIER_MIX) * p_hit + OUTLIER_MIX * inv_max_range;
-            // Grazing returns are down-weighted: they are often noisy or wrong-surface.
+            // Grazing returns are down-weighted since they often have more noise
             float beam_w = obs[i].weight * (0.25f + 0.75f * visibility);
             log_lik += beam_w * std::log(std::max(p, 1e-12f));
         } else {
-            // Explicit miss: expected when grazing or far; suspicious when close/head-on.
+            // A miss is expected for extreme predicted angles, but makes a pose less likely if it was predicted to be head on
             float p_miss = MISS_EXPECTED_P * (1.0f - visibility)
                            + MISS_UNEXPECTED_P * visibility;
             log_lik += obs[i].weight * std::log(std::max(p_miss, 1e-12f));

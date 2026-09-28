@@ -28,6 +28,8 @@ The below files are the most important, and are annotated extensively:
 
 `simulate.py` can be used to test controllers or replay recorded games.
 
+`lib/localisation.cpp` contains the code for localisation (see [LOCALISATION.md](./lib/LOCALISATION.md) for more details)
+
 `main.py` is the file that is run during gameplay, it uses functions from all the files below
 
 `defence.py` includes the controllers for the goalie and a mode called defence, which is a simple mode that just gets the ball and pushes it forwards.
@@ -47,7 +49,7 @@ To see a demo of ball hiding in the simulator, run `python simulate.py --team1 s
 
 ## AI Declaration
 
-Generative AI tools such as GitHub Copilot, Codex and Cursor were used to assist in writing the code in this repo. We believe in using AI to enhance human development, not replace it, so in accordance with the MHS Robotics Club Generative AI policy, all essential code (such as `main.py`, `defence.py`, etc) has been either written or extensively verified by our team. However, test code (such as the calibration dashboard) and code used for model training was mostly written by AI, as it is not used during gameplay.
+Generative AI tools such as GitHub Copilot, Codex and Cursor were used to assist in writing the code in this repo. We believe in using AI to enhance human development, not replace it, so in accordance with the MHS Robotics Club Generative AI policy, all essential code (such as `main.py`, `defence.py`, etc) has been either written or extensively verified by our team. Almost all annotations in these important files are written by hand. However, test code (such as the calibration dashboard) and code used for model training was mostly written by AI, as it is not used during gameplay.
 
 ## Contact
 
