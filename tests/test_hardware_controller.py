@@ -89,7 +89,7 @@ class HardwareControllerTests(unittest.TestCase):
 
     def test_native_imu_api(self):
         # Inspect the built binding without opening hardware.
-        for method in ("get_raw_imu_yaw", "set_startup_yaw", "get_yaw",
+        for method in ("get_raw_imu_yaw", "set_startup_yaw", "adjust_startup_yaw", "get_yaw",
                        "get_gyro_z_deg_s", "get_latest_quaternion", "imu_update_count"):
             self.assertTrue(hasattr(HardwareController, method))
         self.assertNotIn("yaw:", HardwareController.move.__doc__)
@@ -99,6 +99,31 @@ class HardwareControllerTests(unittest.TestCase):
         self.assertRegex(constructor_doc, r"drive_motor_current_limit: [^=]+ = 8\.0")
         self.assertRegex(constructor_doc, r"kick_pulse_length: [^=]+ = 0\.02")
         self.assertIn("use_pcb: bool = False", constructor_doc)
+
+    def test_drift_correction_timing_and_angle_wrap(self):
+        source = ast.parse((ROOT / "main.py").read_text())
+        helper = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "imu_yaw_correction_delta")
+        constants = {node.targets[0].id: ast.literal_eval(node.value)
+                     for node in source.body if isinstance(node, ast.Assign)
+                     and isinstance(node.targets[0], ast.Name)
+                     and node.targets[0].id in {
+                         "IMU_CORRECTION_GAIN", "MAX_IMU_CORRECTION_PER_SECOND"}}
+        namespace = {"math": math, **constants}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), "main.py", "exec"), namespace)  # noqa: S102 - local source helper only
+        correction = namespace["imu_yaw_correction_delta"]
+        self.assertGreater(correction(-179, 179, 0.02), 0)
+        self.assertLess(correction(179, -179, 0.02), 0)
+        self.assertEqual(correction(0, 5, 0), 0)
+        self.assertLessEqual(abs(correction(0, 170, 0.02)),
+                             constants["MAX_IMU_CORRECTION_PER_SECOND"] * 0.02)
+        # Equal elapsed time produces equal convergence across logic rates.
+        for hz in (30, 50, 100):
+            yaw = 5.0
+            for _ in range(hz * 20):
+                yaw += correction(0, yaw, 1 / hz)
+            self.assertAlmostEqual(yaw, 5 * math.exp(-constants["IMU_CORRECTION_GAIN"] * 20),
+                                   places=10)
 
     def test_main_yaw_reference_and_lidar_prior(self):
         # Execute the actual startup helpers without importing main's hardware side effects.

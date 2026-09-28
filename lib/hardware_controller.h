@@ -82,6 +82,7 @@ public:
     std::optional<std::array<double, 4>> get_latest_quaternion() const { return imu_->snapshot().quaternion; }
     uint64_t imu_update_count() const { return imu_->snapshot().update_count; }
     void set_startup_yaw(double raw_yaw) { imu_->set_startup_yaw(raw_yaw); }
+    void adjust_startup_yaw(double delta_deg) { imu_->adjust_startup_yaw(delta_deg); }
     HardwareHealth health() const;
     PcbSnapshot get_pcb_snapshot() const;
     std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);

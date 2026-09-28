@@ -33,6 +33,8 @@ public:
     void service();
     void close() noexcept;
     void set_startup_yaw(double raw_yaw);
+    // Small drift adjustment: retain acquisition-time history and its epoch.
+    void adjust_startup_yaw(double delta_deg);
     Snapshot snapshot() const;
     struct History {
         uint64_t epoch;

@@ -263,8 +263,14 @@ class LocalisationSession:
             and now - self.last_imu_time <= self.SENSOR_TIMEOUT_S
             and mcl_age <= self.SENSOR_TIMEOUT_S
         )
+        imu_yaw = self.imu.get_yaw()
+        yaw_error = None
+        if (ok and yaw is not None and imu_yaw is not None
+                and math.isfinite(yaw) and math.isfinite(imu_yaw)):
+            yaw_error = (yaw - imu_yaw + 180.0) % 360.0 - 180.0
         self.state = {
             "pose": [x, y, yaw, confidence, bool(ok)],
+            "yaw_error_deg": yaw_error,
             "fresh": fresh, "timestamp": now,
             "scan_age_s": now - self.last_scan_time,
             "imu_age_s": now - self.last_imu_time,

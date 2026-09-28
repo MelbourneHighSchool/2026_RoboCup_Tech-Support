@@ -226,6 +226,18 @@ void LinuxBno08x::set_startup_yaw(double raw_yaw) {
         sample_.last_yaw = *sample_.yaw;
     }
 }
+void LinuxBno08x::adjust_startup_yaw(double delta_deg) {
+    if (!std::isfinite(delta_deg)) throw std::invalid_argument("Yaw adjustment must be finite");
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    if (!startup_yaw_) throw std::logic_error("Set startup yaw before adjusting it");
+    startup_yaw_ = wrap(*startup_yaw_ + wrap(delta_deg));
+    if (sample_.raw_yaw) {
+        sample_.yaw = wrap(*startup_yaw_ - *sample_.raw_yaw);
+        sample_.last_yaw = *sample_.yaw;
+    }
+    // Past yaw samples retain the offset used at their acquisition time. New
+    // reports use the adjusted offset. Gyro-based deskew sees no fake rotation.
+}
 LinuxBno08x::Snapshot LinuxBno08x::snapshot() const {
     std::lock_guard<std::mutex> lock(imu_mutex_);
     auto result = sample_;

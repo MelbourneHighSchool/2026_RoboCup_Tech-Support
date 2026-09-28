@@ -68,6 +68,10 @@ BALL_TIMEOUT = 0.5 # seconds; maximum time for which the ball position can be ex
 STARTUP_YAW_SAMPLE_COUNT = 25
 STARTUP_YAW_SAMPLE_INTERVAL = 0.02
 
+IMU_CORRECTION_CONFIDENCE_THRESHOLD = 0.9
+IMU_CORRECTION_GAIN = 0.05  # per second; 20-second time constant
+MAX_IMU_CORRECTION_PER_SECOND = 1.0 # deg/s
+
 SWITCHM = 2
 
 def _distance_mm(ax, ay, bx, by):
@@ -334,6 +338,14 @@ def capture_startup_yaw(
         time.sleep(sample_interval)
 
 
+def imu_yaw_correction_delta(mcl_yaw, imu_yaw, elapsed_s):
+    """Return a wrapped, time-based drift correction in degrees."""
+    error = (mcl_yaw - imu_yaw + 180.0) % 360.0 - 180.0
+    correction = error * -math.expm1(-IMU_CORRECTION_GAIN * elapsed_s)
+    limit = MAX_IMU_CORRECTION_PER_SECOND * elapsed_s
+    return max(-limit, min(limit, correction))
+
+
 def feed_imu_yaw_prior(imu_sensor):
     """Push startup-relative IMU yaw into MCL as a soft heading prior."""
     imu_yaw = imu_sensor.get_yaw()
@@ -525,6 +537,7 @@ try:
     pause_was_pressed = False
     requested_run = run
     imu_pause = ImuPause(hardware_controller.health()["imu_recovery_generation"])
+    last_yaw_correction_time = time.monotonic()
     while True:
         if enter_pressed():
             break
@@ -578,6 +591,10 @@ try:
                         feed_imu_yaw_prior(hardware_controller)
                 last_paused_imu_count = count
                 next_paused_yaw_sample_time = now + STARTUP_YAW_SAMPLE_INTERVAL
+        correction_time = time.monotonic()
+        # Do not turn a stalled loop into a large heading-reference jump.
+        correction_dt = min(correction_time - last_yaw_correction_time, 0.1)
+        last_yaw_correction_time = correction_time
         yaw = hardware_controller.get_yaw()
         feed_imu_yaw_prior(hardware_controller)
         feed_timed_motion(lidar, hardware_controller)
@@ -587,12 +604,21 @@ try:
         if run:
             _logic_loop_count += 1
 
-            x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
+            x_pos, y_pos, mcl_yaw, confidence = lidar.get_pose()
             if x_pos is None or y_pos is None or yaw is None:
                 hardware_controller.move(0, 0, 0, 0, 0)
                 status.update(bot_mode.name, run, GameState.BLOCKED, "WAITING FOR POSE")
                 time.sleep(0.01)
                 continue
+
+            if confidence > IMU_CORRECTION_CONFIDENCE_THRESHOLD:
+                correction = imu_yaw_correction_delta(mcl_yaw, yaw, correction_dt)
+                hardware_controller.adjust_startup_yaw(correction)
+                startup_yaw = (startup_yaw + correction + 180.0) % 360.0 - 180.0
+                yaw = hardware_controller.get_yaw()
+                if yaw is None:
+                    hardware_controller.move(0, 0, 0, 0, 0)
+                    continue
 
             camera_scene = camera.get_scene_snapshot()
             if camera_scene is None:

@@ -130,6 +130,8 @@ PYBIND11_MODULE(hardware_controller, module) {
              py::arg("constant_speed_amps"), py::arg("acceleration_amps"),
              py::call_guard<py::gil_scoped_release>())
         .def("set_startup_yaw", &HardwareController::set_startup_yaw, py::arg("raw_yaw"))
+        .def("adjust_startup_yaw", &HardwareController::adjust_startup_yaw, py::arg("delta_deg"),
+             "Adjust the heading reference without resetting timestamped motion history.")
         .def("get_yaw", &HardwareController::get_yaw)
         .def("get_gyro_z_deg_s", &HardwareController::get_gyro_z_deg_s)
         .def("get_latest_quaternion", &HardwareController::get_latest_quaternion)

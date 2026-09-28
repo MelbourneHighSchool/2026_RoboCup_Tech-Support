@@ -131,6 +131,7 @@ void imu_protocol() {
     assert(state->imu.feature_count(0x02) == 1);
     assert(std::count(state->imu.reads.begin(), state->imu.reads.end(), 32) >= 3);
     assert(!imu.snapshot().raw_yaw);
+    throws([&] { imu.adjust_startup_yaw(1); });
     imu.set_startup_yaw(10);
     state->imu.yaw_report(-80);
     // Clockwise turn: raw yaw and sensor gyro Z decrease, while the
@@ -150,6 +151,15 @@ void imu_protocol() {
     const double sampled_now=std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     assert(history.yaw.back().first <= sampled_now && sampled_now-history.yaw.back().first < 0.1);
+    // Repeated drift corrections preserve all timestamped motion evidence.
+    for (int i=0; i<50; ++i) imu.adjust_startup_yaw(0.1);
+    close(*imu.snapshot().yaw,95,0.01);
+    close(imu.snapshot().last_yaw,95,0.01);
+    assert(imu.history().epoch==history.epoch);
+    assert(imu.history().yaw==history.yaw && imu.history().gyro==history.gyro);
+    throws([&] { imu.adjust_startup_yaw(std::numeric_limits<double>::quiet_NaN()); });
+    imu.adjust_startup_yaw(-5);
+    close(*imu.snapshot().yaw,90,0.01);
     // A failed payload read must never publish a partial quaternion.
     state->imu.yaw_report(50);
     state->imu.fail_payload = true;

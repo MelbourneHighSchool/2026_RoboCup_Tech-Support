@@ -369,6 +369,7 @@ function render(s) {
     const p=l.pose, o=l.odometry, r=l.recovery, c=l.correction;
     readings($('localisationReadings'), [
       ['Fix',p[4] ? (l.fresh?'tracking':'STALE'):'NO FIX'],['Pose X / Y / yaw',`${fmt(p[0])} / ${fmt(p[1])} mm / ${fmt(p[2])}°`],['Confidence',fmt(p[3],3)],
+      ['Yaw error (MCL − IMU)',l.yaw_error_deg == null ? 'unavailable' : `${l.yaw_error_deg > 0 ? '+' : ''}${fmt(l.yaw_error_deg)}°${l.fresh ? '' : ' · STALE'}`],
       ['Scan age / IMU age',`${fmt(l.scan_age_s,2)} / ${fmt(l.imu_age_s,2)} s`],['Scans / corrections',`${l.scan_generation} / ${l.mcl_updates}`],['Points',l.scan_count],['Scan updates',l.scan_updates_enabled?'enabled':'PAUSED · predict only'],
       ['Correction error',c[9]?`${fmt(c[7])} mm / ${fmt(c[8])}°`:'unavailable'],['Predicted pose',c[9]?c.slice(1,4).map(v=>fmt(v)).join(' / '):'unavailable'],['Corrected pose',c[9]?c.slice(4,7).map(v=>fmt(v)).join(' / '):'unavailable'],
       ['Quality / baseline',r[4]?`${fmt(r[0],2)} / ${fmt(r[1],2)}`:'not ready'],['Bad scans / global recovery',`${r[2]} / ${fmt(r[3]*100,0)}%`],['Loop / gyro',`${fmt(o.dt_s*1000)} ms / ${fmt(o.omega_deg_s)}°/s`],
