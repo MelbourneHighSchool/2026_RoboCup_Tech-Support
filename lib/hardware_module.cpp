@@ -113,6 +113,7 @@ PYBIND11_MODULE(hardware_controller, module) {
             result["imu_recovery_generation"] = h.imu_recovery_generation;
             result["fault_source"] = h.fault_source;
             result["error"] = h.error; result["motor_address"] = h.motor_address;
+            result["pcb_error"] = h.pcb_error;
             return result;
         })
         .def("get_pcb_snapshot", [](const HardwareController& self) {

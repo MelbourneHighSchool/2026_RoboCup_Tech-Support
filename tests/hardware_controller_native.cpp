@@ -19,7 +19,7 @@ struct State {
     std::vector<Packet> packets;
     std::map<int, int32_t> speed;
     int delay_ms = 0;
-    int pcb_reads = 0, pcb_kicks = 0;
+    int pcb_reads = 0, pcb_kicks = 0, pcb_attempts = 0;
     int fail_address = -1, fail_opcode = -1, bad_firmware_address = -1;
     std::atomic<bool> in_transfer{false};
     std::atomic<bool> block_motor{false}, motor_blocked{false};
@@ -41,7 +41,10 @@ public:
         // Once an IMU header is read, all chunks must finish before any other I/O.
         assert(!state_->imu.peeked);
         if (address == 0x37) {
-            if (state_->fail_address == address) throw std::runtime_error("PCB unavailable");
+            ++state_->pcb_attempts;
+            if (state_->fail_address == address &&
+                (state_->fail_opcode == -1 || (!reading && state_->fail_opcode == data[0])))
+                throw std::runtime_error("PCB unavailable");
             if (reading) {
                 assert(size == 30);
                 for (size_t i = 0; i < size; ++i) data[i] = i;
@@ -636,8 +639,8 @@ void imu_pause_finishes_kicker() {
     controller.stop();
 }
 int main() {
-    // Explicit enabled-path test; all interactive defaults remain USE_PCB=false.
-    for (bool inject_failure : {false, true}) {
+    // Healthy PCB sends each kick once.
+    {
         auto state = std::make_shared<State>();
         HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state),
             0x4a, 10, 27, "", nullptr, 8, 1, 0.02, 0.5, nullptr, true);
@@ -650,11 +653,62 @@ int main() {
         {
             std::lock_guard<std::mutex> lock(state->mutex);
             assert(state->pcb_kicks == 1);
-            if (inject_failure) state->fail_address = 0x37;
         }
-        if (inject_failure) await_condition([&] { return !controller.get_pcb_snapshot().valid; });
         controller.stop();
         assert(!controller.get_pcb_snapshot().valid);
+    }
+    // Failed reads, failed kicks, and an absent PCB at startup all degrade
+    // without stopping drive/IMU workers or falling back to GPIO kicking.
+    for (int failure : {0, 1, 2}) {
+        auto state = std::make_shared<State>();
+        auto gpio = std::make_shared<KickState>();
+        if (failure == 2) state->fail_address = 0x37;
+        HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state),
+            0x4a, 10, 27, "", std::make_unique<FakeKicker>(gpio), 8, 1, 0.02, 0.5, nullptr, true);
+        controller.set_startup_yaw(0);
+        if (failure != 2) {
+            await_condition([&] { return controller.get_pcb_snapshot().valid; });
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_address = 0x37;
+            state->fail_opcode = failure == 1 ? 255 : -1;
+        }
+        controller.move(0, 300, 0, 0, 1, true);
+        await_condition([&] { return !controller.health().pcb_error.empty(); });
+        assert(controller.health().error.empty());
+        assert(controller.health().fault_source.empty());
+        assert(!controller.get_pcb_snapshot().valid);
+        int attempts;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            attempts = state->pcb_attempts;
+            state->fail_address = -1; // Reconnection must not restart PCB I/O.
+        }
+        const auto ticks = controller.loop_count();
+        const auto imu_count = controller.imu_update_count();
+        for (int i = 0; i < 3; ++i) {
+            controller.move(90, 400, 0, 0, 1, true);
+            wait_ticks(controller, controller.loop_count() + 2);
+        }
+        assert(controller.loop_count() > ticks);
+        assert(controller.imu_update_count() > imu_count);
+        assert(controller.get_localisation_sample().timestamp_s > 0);
+        assert(!controller.get_pcb_snapshot().valid);
+        close(controller.current_speed(), 400);
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            assert(state->pcb_attempts == attempts);
+            assert(state->pcb_kicks == 0);
+            assert(state->speed[25] != 0);
+        }
+        {
+            std::lock_guard<std::mutex> lock(gpio->mutex);
+            assert(gpio->starts.empty());
+        }
+        controller.stop();
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            for (int address : {25, 26, 27, 28}) assert(state->speed[address] == 0);
+        }
     }
     shared_display_lifecycle();
     imu_pause_finishes_kicker();

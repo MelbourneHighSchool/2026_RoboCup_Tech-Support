@@ -146,6 +146,7 @@ class GameStatus:
             blocked = False
             if self.hardware is not None:
                 health = self.hardware.health()
+                self.report("PCB", health.get("pcb_error", ""))
                 blocked = not health["imu_healthy"]
                 if blocked:
                     self.lidar.clear_imu_yaw()

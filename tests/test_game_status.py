@@ -101,6 +101,21 @@ class GameStatusTests(unittest.TestCase):
             self.assertIn("LIDAR: DISCONNECTED - ODOM+PCB", messages)
             self.assertIn("LIDAR: recovered", messages)
 
+    def test_pcb_failure_reports_error_without_blocking_game(self):
+        self.status.update("STRIKER", True)
+        self.fresh()
+        self.health["pcb_error"] = "PCB communication failed: disconnected; sensors and kicking disabled"
+        with unittest.mock.patch("builtins.print"):
+            self.status.poll()
+        self.assertEqual(self.display.components["PCB"], ("!", self.health["pcb_error"]))
+        self.assertEqual(self.display.state[:3], ("STRIKER", True, "RUNNING"))
+        self.assertEqual(self.cleared, 0)
+        # A later motor fault must still block operation.
+        self.health.update(error="Motor communication failed", fault_source="MOTOR")
+        with unittest.mock.patch("builtins.print"):
+            self.status.poll()
+        self.assertEqual(self.display.state[2], "BLOCKED")
+
     def test_capture_alive_inference_dead(self):
         self.fresh()
         self.status.poll()

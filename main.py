@@ -44,7 +44,7 @@ FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console
 PEER_PORT = 5005 # Port for bot to bot communication.
 ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
 ENABLE_ROLE_SWITCHING = True
-USE_PAUSE = False # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
+USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
 CONSTANT_SPEED_TORQUE = 2.0  # Amps; The current limit when the bot is at a constant speed.
@@ -542,7 +542,7 @@ try:
             if SWITCHM == 1 and pause_was_pressed and not pause_pressed:
                 requested_run = not requested_run
             elif SWITCHM == 2:
-                requested_run = pause_pressed
+                requested_run = not pause_pressed
         pause_was_pressed = pause_pressed
         health = hardware_controller.health()
         run = imu_pause.update(requested_run, health)

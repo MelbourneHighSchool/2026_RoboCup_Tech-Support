@@ -263,7 +263,7 @@ HardwareHealth HardwareController::health() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const auto sample = imu_->snapshot();
     return {sample.raw_yaw.has_value() && sample.gyro_z.has_value(),
-            fault_source_, error_, fault_address_, imu_recovery_generation_};
+            fault_source_, error_, fault_address_, imu_recovery_generation_, pcb_error_};
 }
 
 void HardwareController::check_state() const {
@@ -283,7 +283,8 @@ void HardwareController::move(double direction, double speed, double rotation,
     if (kick && !kicker_ && !use_pcb_) throw std::invalid_argument("Kick requested without a configured kicker_pin or PCB");
     // Like kicker.py, ignore requests during an active pulse or the 0.5 s cooldown.
     // Do not queue an old request to fire when the cooldown expires.
-    const bool accepted_kick = kick && !kicking_ && std::chrono::steady_clock::now() >= next_kick_time_;
+    const bool accepted_kick = kick && pcb_error_.empty() && !kicking_ &&
+                              std::chrono::steady_clock::now() >= next_kick_time_;
     target_ = {wrap(direction), speed, wrap(rotation), std::clamp(rotation_speed, 0.0, 1.0),
                0, dribbler, accepted_kick};
     if (accepted_kick) wake_.notify_all();
@@ -519,7 +520,15 @@ void HardwareController::pcb_loop() noexcept {
             if (next <= now) next = now + period; // Skip missed polls after a stall.
         }
     } catch (const std::exception& exc) {
-        fail("PCB communication failed: " + std::string(exc.what()), "OTHER");
+        // A PCB outage removes floor observations and kicking, but must not
+        // interrupt the motor/IMU workers or activate the GPIO kicker.
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pcb_snapshot_.valid = false;
+        target_.kick = false;
+        pcb_error_ = "PCB communication failed: " + std::string(exc.what()) +
+                     "; sensors and kicking disabled";
+        if (display_) display_->component("PCB", '!', pcb_error_);
+        std::fprintf(stderr, "%s\n", pcb_error_.c_str());
     }
 }
 void HardwareController::drive_loop() noexcept {

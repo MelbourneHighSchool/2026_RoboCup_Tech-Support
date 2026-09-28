@@ -40,6 +40,7 @@ struct HardwareHealth {
     std::string fault_source, error;
     int motor_address;
     uint64_t imu_recovery_generation;
+    std::string pcb_error; // Nonfatal; PCB reads and kicking stay disabled until restart.
 };
 struct PcbSnapshot {
     std::array<uint8_t, PCB_SENSOR_COUNT> readings{};
@@ -130,7 +131,7 @@ private:
     bool kicking_ = false; // Protected by state_mutex_, including the cooldown timestamp.
     std::chrono::steady_clock::time_point next_kick_time_{};
     double dx_ = 0, dy_ = 0;
-    std::string error_, fault_source_;
+    std::string error_, fault_source_, pcb_error_;
     int fault_address_ = -1;
     bool imu_seen_ = false, imu_unavailable_ = false;
     uint64_t imu_recovery_generation_ = 0;
