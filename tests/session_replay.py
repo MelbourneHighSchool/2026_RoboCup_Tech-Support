@@ -203,3 +203,76 @@ def annotation_draws_all_bots_without_a_ball():
     assert np.all(annotated[80, 100] == 255)
     assert np.any(annotated[100, 20])
     assert np.any(annotated[100, 90])
+
+
+def test_video_reader_steps_backward_through_variable_frame_times():
+    from fractions import Fraction
+
+    import av
+
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "frames.mkv"
+        with av.open(str(path), mode="w") as output:
+            stream = output.add_stream("ffv1", rate=30)
+            stream.width = 16
+            stream.height = 16
+            stream.pix_fmt = "bgr0"
+            stream.time_base = Fraction(1, 1000)
+            stream.codec_context.time_base = Fraction(1, 1000)
+            for index, timestamp in enumerate([2000, 2100, 2110, 2120, 2500]):
+                pixels = np.full((16, 16, 3), index * 40, dtype=np.uint8)
+                frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+                frame.pts = timestamp
+                frame.time_base = Fraction(1, 1000)
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+            for packet in stream.encode():
+                output.mux(packet)
+
+        reader = session_replay.VideoReader(path)
+        try:
+            assert reader.start_time > 0
+            assert len(reader.frame_times) == 5
+            # Forward, backward, repeated, and forward again, including EOF.
+            for index in [0, 1, 2, 3, 4, 3, 2, 1, 0, 0, 1, 4, 4, 3]:
+                pixels = reader.frame_at(reader.frame_times[index])
+                assert np.all(pixels == index * 40), index
+        finally:
+            reader.close()
+
+
+def test_video_reader_rewinds_h264_transport_stream():
+    from fractions import Fraction
+
+    import av
+
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "video.ts"
+        with av.open(str(path), mode="w", format="mpegts") as output:
+            stream = output.add_stream("libx264", rate=30)
+            stream.width = 32
+            stream.height = 32
+            stream.pix_fmt = "yuv420p"
+            stream.codec_context.gop_size = 30
+            stream.codec_context.max_b_frames = 0
+            stream.options = {"sc_threshold": "0"}
+            for index in range(120):
+                pixels = np.full((32, 32, 3), index * 2, dtype=np.uint8)
+                frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+                frame.pts = index
+                frame.time_base = Fraction(1, 30)
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+            for packet in stream.encode():
+                output.mux(packet)
+
+        with av.open(str(path)) as source:
+            expected = [frame.to_ndarray(format="rgb24") for frame in source.decode(video=0)]
+        reader = session_replay.VideoReader(path)
+        try:
+            assert len(reader.frame_times) == len(expected)
+            for index in [*range(80), *range(78, 20, -1), 100, 99, 0, 1]:
+                actual = reader.frame_at(reader.frame_times[index])
+                np.testing.assert_array_equal(actual, expected[index], err_msg=f"frame {index}")
+        finally:
+            reader.close()

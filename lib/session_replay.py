@@ -7,6 +7,7 @@ import csv
 import json
 import logging
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 
 import cv2
@@ -201,24 +202,44 @@ class VideoReader:
         self.frame_times = packet_times
         if self.frame_times:
             self.duration_s = max(self.duration_s, self.frame_times[-1])
-        self.container.seek(0, stream=self.stream, backward=True)
+        self.container.seek(self.start_time, stream=self.stream, backward=True)
         self._iterator = iter(self.container.decode(self.stream))
         self._last_time = None
         self._last_rgb = None
 
     def _seek(self, timestamp: float) -> None:
-        target = max(0.0, timestamp - 0.25)
-        self.container.seek(
-            int(target / self.time_base),
-            stream=self.stream,
-            backward=True,
-        )
-        self._iterator = iter(self.container.decode(self.stream))
+        # MPEG-TS seeking can land after the preceding keyframe even with
+        # backward=True. Check the first decodable frame and widen the preroll
+        # until decoding starts at or before the requested presentation time.
+        preroll = 0.25
+        while True:
+            target = max(0.0, timestamp - preroll)
+            self.container.seek(
+                self.start_time + int(target / self.time_base),
+                stream=self.stream,
+                backward=True,
+            )
+            iterator = iter(self.container.decode(self.stream))
+            first = next(iterator, None)
+            first_time = (
+                float((first.pts - self.start_time) * first.time_base)
+                if first is not None and first.pts is not None
+                else None
+            )
+            if target == 0.0 or (
+                first_time is not None and first_time <= timestamp + 1e-9
+            ):
+                self._iterator = chain([first], iterator) if first is not None else iter(())
+                break
+            preroll *= 2.0
         self._last_time = None
         self._last_rgb = None
 
     def frame_at(self, timestamp: float):
         timestamp = max(0.0, float(timestamp))
+        # Repeated requests must not consume the next decoded frame.
+        if self._last_time is not None and abs(timestamp - self._last_time) < 1e-9:
+            return self._last_rgb
         if (
             self._last_time is not None
             and (timestamp < self._last_time or timestamp - self._last_time > 1.0)
@@ -237,7 +258,9 @@ class VideoReader:
             )
             self._last_time = frame_time
             self._last_rgb = frame.to_ndarray(format="rgb24")
-            if frame_time + (0.5 / self.fps) >= timestamp:
+            # Use presentation timestamps: average FPS can hide a whole frame
+            # when adjacent frames are closer than half the average interval.
+            if frame_time + 1e-9 >= timestamp:
                 break
         return self._last_rgb
 
