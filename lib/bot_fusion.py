@@ -203,6 +203,32 @@ def project_bots(bots, pose):
     return output
 
 
+def evaluate_bot_scene(scene, lidar, now, config=None):
+    """Expose per-detection fusion evidence without changing game strategy mode."""
+    config = config or FusionConfig()
+    timestamp = scene["timestamp_s"]
+    context = {"reason": 'missing_camera_time', "points": []}
+    scan = None
+    if _finite(timestamp):
+        if not 0 <= now - timestamp <= config.max_camera_age_s:
+            context["reason"] = 'stale_camera'
+        elif not hasattr(lidar, "get_scan_history") or not hasattr(lidar, "fusion_context"):
+            context["reason"] = 'native_api_unavailable'
+        else:
+            scans = [s for s in lidar.get_scan_history(timestamp)
+                     if _finite(s["time_s"]) and s["time_s"] > 0
+                     and 0 <= now - s["received_s"] <= config.max_camera_age_s]
+            if scans:
+                scan = min(scans, key=lambda s: abs(s["time_s"] - timestamp))
+                context = lidar.fusion_context(scan["points"], timestamp,
+                                               config.max_time_delta_s)
+            else:
+                context["reason"] = 'no_scan'
+    context = dict(context)
+    results = fuse_bots(scene["bots"], context, timestamp, config)
+    return {"scene": scene, "scan": scan, "context": context, "results": results}
+
+
 class BotRangeFusion:
     """One evaluation per new camera frame; diagnostic mode preserves strategy."""
 
@@ -218,27 +244,10 @@ class BotRangeFusion:
         original = project_bots(bots, current_pose)
         if self.mode == FusionMode.OFF or not bots:
             return original
-        timestamp = scene["timestamp_s"]
-        context = {"reason": "missing_camera_time", "points": []}
-        scan = None
-        if _finite(timestamp):
-            if not 0 <= now - timestamp <= self.config.max_camera_age_s:
-                context["reason"] = "stale_camera"
-            elif not hasattr(lidar, "get_scan_history") or not hasattr(lidar, "fusion_context"):
-                context["reason"] = "native_api_unavailable"
-            else:
-                scans = [s for s in lidar.get_scan_history(timestamp)
-                         if _finite(s["time_s"]) and s["time_s"] > 0
-                         and 0 <= now - s["received_s"] <= self.config.max_camera_age_s]
-                if scans:
-                    scan = min(scans, key=lambda s: abs(s["time_s"] - timestamp))
-                    context = lidar.fusion_context(scan["points"], timestamp,
-                                                   self.config.max_time_delta_s)
-                else:
-                    context["reason"] = "no_scan"
-        results = fuse_bots(bots, context, timestamp, self.config)
+        evidence = evaluate_bot_scene(scene, lidar, now, self.config)
+        scan, context, results = evidence["scan"], evidence["context"], evidence["results"]
         proposed = (project_bots(results, context["pose"])
-                    if context["reason"] == "ok" else original)
+                    if context["reason"] == 'ok' else original)
         if self.record is not None:
             self.record({"scene": scene, "scan": scan, "context": context,
                          "results": results, "camera_positions": original,

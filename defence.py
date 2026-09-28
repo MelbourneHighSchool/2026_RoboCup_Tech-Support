@@ -1,6 +1,13 @@
 import math
 from dataclasses import dataclass
 
+# Public passing helpers: reusable here without importing hardware or main.py.
+from lib.bot_fusion import evaluate_bot_scene  # noqa: F401 - public strategy API
+from lib.passing import (  # noqa: F401
+    PassConfig,
+    pass_available,
+)
+
 # Goalie tracks along this fixed X line, with bounded sideways travel.
 GOALIE_BLOCK_X = 550
 GOALIE_MAX_SPEED = 3000

@@ -1,6 +1,7 @@
 # This module allows two bots on the same network to communicate with each other over UDP broadcast.
 # This communication is symmetric, which means that both bots can run the same code, and both send and receive messages to each other.
 
+import copy
 import json
 import secrets
 import socket
@@ -95,6 +96,16 @@ class Peer:
                 # Message received but timed out
                 return None
             return self._last_message
+
+    def receive_snapshot(self) -> dict | None:
+        """Atomically copy a message with its local monotonic receipt time."""
+        with self._lock:
+            if self._last_message is None or self._last_received_at is None:
+                return None
+            if time.monotonic() - self._last_received_at > self.peer_timeout_s:
+                return None
+            return {"message": copy.deepcopy(self._last_message),
+                    "received_at": self._last_received_at}
 
     def _receive_loop(self) -> None:
         # Receive loop
