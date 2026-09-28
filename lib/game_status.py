@@ -3,6 +3,8 @@
 import threading
 import time
 
+from state import BotMode, GameState, HealthState
+
 USE_PCB = False
 
 
@@ -20,8 +22,8 @@ class ProgressHealth:
             self.changed_at = now
             self.seen = True
         if now - self.changed_at >= 1.0:
-            return "!"
-        return "+" if self.seen else "?"
+            return HealthState.FAILED
+        return HealthState.READY if self.seen else HealthState.UNKNOWN
 
 
 class ImuPause:
@@ -56,9 +58,9 @@ class GameStatus:
         self.hardware = None
         self.camera = None
         self.recording = None
-        self.mode = mode
+        self.mode = BotMode[mode] if isinstance(mode, str) else BotMode(mode)
         self.run = False
-        self.stage = "STARTING"
+        self.stage = GameState.STARTING
         self.detail = "LIDAR"
         self.camera_ready = False
         self._trackers = {}
@@ -71,9 +73,10 @@ class GameStatus:
         self._thread = threading.Thread(target=self._worker, name="game-status", daemon=True)
         self._thread.start()
 
-    def update(self, mode, run, stage="", detail=""):
+    def update(self, mode, run, stage=GameState.AUTO, detail=""):
         with self._lock:
-            self.mode, self.run, self.stage, self.detail = mode, run, stage, detail
+            self.mode = BotMode[mode] if isinstance(mode, str) else BotMode(mode)
+            self.run, self.stage, self.detail = run, GameState(stage), detail
 
     def attach_hardware(self, hardware):
         with self._lock:
@@ -100,7 +103,7 @@ class GameStatus:
             else:
                 self._errors.pop(source, None)
             if self.display is not None:
-                self.display.component(source, "!" if message else "+", message)
+                self.display.component(source, HealthState.FAILED if message else HealthState.READY, message)
 
     def _progress(self, name, count, now):
         tracker = self._trackers.setdefault(name, ProgressHealth(now))
@@ -111,27 +114,27 @@ class GameStatus:
             now = self.clock()
             lidar_health = self._progress("lidar", self.lidar.get_scan_generation(), now)
             fallback = "ODOM"
-            if lidar_health == "!" and self.use_pcb:
+            if lidar_health == HealthState.FAILED and self.use_pcb:
                 lines = self.lidar.get_line_readings()
                 if (lines["applied_count"] > 0 and
                         0 <= now - lines["last_applied_timestamp_s"] <= 0.5):
                     fallback = "ODOM+PCB"
-            self.report("LIDAR", f"DISCONNECTED - {fallback}" if lidar_health == "!" else "")
+            self.report("LIDAR", f"DISCONNECTED - {fallback}" if lidar_health == HealthState.FAILED else "")
             if self.display is not None:
                 self.display.component("LIDAR", lidar_health, self._errors.get("LIDAR", ""))
             if self.camera is not None:
                 capture = self._progress("capture", self.camera.capture_count, now)
                 infer = self._progress("infer", self.camera.infer_count, now)
                 error = self.camera.inference_error
-                if capture == "!":
+                if capture == HealthState.FAILED:
                     error = "DISCONNECTED - NO FRAMES"
-                elif not error and infer == "!":
+                elif not error and infer == HealthState.FAILED:
                     error = "INFERENCE STALLED"
-                self.camera_ready = capture == "+" and infer == "+" and not error
+                self.camera_ready = capture == HealthState.READY and infer == HealthState.READY and not error
                 self.report("CAMERA", error or "")
                 if self.display is not None:
-                    self.display.component("CAMERA", "!" if error else (
-                        "+" if self.camera_ready else "?"), error or "")
+                    self.display.component("CAMERA", HealthState.FAILED if error else (
+                        HealthState.READY if self.camera_ready else HealthState.UNKNOWN), error or "")
                 recording_error = self.camera.recording_info.get("recording_error")
                 if recording_error:
                     self.report("RECORDING", recording_error)
@@ -149,10 +152,10 @@ class GameStatus:
                 if health["error"]:
                     self.report(health["fault_source"] or "OTHER", health["error"])
                     blocked = True
-            state = self.stage or ("BLOCKED" if self.run and blocked else (
-                "RUNNING" if self.run else "PAUSED"))
+            state = self.stage or (GameState.BLOCKED if self.run and blocked else (
+                GameState.RUNNING if self.run else GameState.PAUSED))
             if self.display is not None:
-                self.display.update(self.mode, self.run, state, self.detail)
+                self.display.update(self.mode.name, self.run, state, self.detail)
             return self.camera_ready
 
     def _worker(self):

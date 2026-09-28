@@ -9,6 +9,8 @@ import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from state import FusionMode, FusionSource
+
 
 @dataclass(frozen=True)
 class FusionConfig:
@@ -96,12 +98,13 @@ def fuse_bots(bots, context, reference_time, config=None):
     a unique camera owner and all must admit the same centre-distance interval.
     """
     config = config or FusionConfig()
+    reason = context["reason"]
     results = [{"bearing_deg": bot["bearing_deg"],
                 "distance_mm": bot["distance_mm"],
                 "camera_distance_mm": bot["distance_mm"],
-                "source": "camera", "bounds_mm": None,
-                "reason": context["reason"]} for bot in bots]
-    if context["reason"] != "ok":
+                "source": FusionSource.CAMERA, "bounds_mm": None,
+                "reason": reason} for bot in bots]
+    if context["reason"] != 'ok':
         return results
     points = [tuple(p) for p in context["points"]
               if len(p) == 5 and all(_finite(v) for v in p) and p[3] >= 5
@@ -110,18 +113,19 @@ def fuse_bots(bots, context, reference_time, config=None):
     groups = _clusters(list(dict.fromkeys(points)), config)
     candidates = [[] for _ in bots]
     owners = {}
+    rejected = set()
     for index, bot in enumerate(bots):
         result = results[index]
         bearing, distance = bot["bearing_deg"], bot["distance_mm"]
         if (not _finite(bearing) or not _finite(distance) or distance <= 0
                 or not _finite(bot.get("confidence"))
                 or bot["confidence"] < config.min_confidence):
-            result["reason"] = "unusable_camera"
+            result["reason"] = 'unusable_camera'
             continue
         angle = math.radians(bearing)
         allowance = max(config.camera_error_mm, config.camera_error_fraction * distance)
         near_static = False
-        result["reason"] = "no_match"
+        result["reason"] = 'no_match'
         for cluster_id, group in enumerate(groups):
             intervals = [_interval(p, angle, reference_time, config) for p in group]
             plausible = [i for i in intervals if i is not None
@@ -134,31 +138,34 @@ def fuse_bots(bots, context, reference_time, config=None):
                 near_static = True
                 continue
             if len(plausible) != len(group):
-                result["reason"] = "inconsistent_returns"
+                rejected.add(index)
+                result["reason"] = 'inconsistent_returns'
                 continue
             low = max(i[0] for i in plausible)
             high = min(i[1] for i in plausible)
             if low > high or high <= 0:
-                result["reason"] = "inconsistent_returns"
+                rejected.add(index)
+                result["reason"] = 'inconsistent_returns'
                 continue
             candidates[index].append((cluster_id, low, high, len(group)))
             owners.setdefault(cluster_id, set()).add(index)
         if near_static:
             # Keep ownership claims to prevent this bot's cluster being handed
             # to a second detection after the first was rejected for geometry.
-            result["reason"] = "static_ambiguity"
+            rejected.add(index)
+            result["reason"] = 'static_ambiguity'
 
     for index, choices in enumerate(candidates):
         result = results[index]
-        if result["reason"] in {"static_ambiguity", "inconsistent_returns"} or not choices:
+        if index in rejected or not choices:
             continue
         if any(len(owners[cluster_id]) != 1 for cluster_id, *_ in choices):
-            result["reason"] = "ambiguous_match"
+            result["reason"] = 'ambiguous_match'
             continue
         # Every disconnected support must stand on its own. Do not combine
         # isolated noise points merely to reach the minimum return count.
         if any(count < config.min_points for _, _, _, count in choices):
-            result["reason"] = "isolated_return"
+            result["reason"] = 'isolated_return'
             continue
         # Intersect ALL plausible supports: an overlap means one centre on the
         # camera bearing can contain every return within its footprint/error
@@ -167,19 +174,19 @@ def fuse_bots(bots, context, reference_time, config=None):
         low = max(low for _, low, _, _ in choices)
         high = min(high for _, _, high, _ in choices)
         if low > high:
-            result["reason"] = "ambiguous_match"
+            result["reason"] = 'ambiguous_match'
             continue
         distance = result["camera_distance_mm"]
         allowance = max(config.camera_error_mm, config.camera_error_fraction * distance)
         if high - low >= 2 * allowance:
-            result["reason"] = "weak_constraint"
+            result["reason"] = 'weak_constraint'
             continue
         selected = min(max(distance, low), high)
         if abs(selected - distance) > allowance:
-            result["reason"] = "range_disagreement"
+            result["reason"] = 'range_disagreement'
             continue
-        result.update(distance_mm=selected, source="fused", bounds_mm=[low, high],
-                      reason="constrained" if selected != distance else "camera_within_bounds")
+        result.update(distance_mm=selected, source=FusionSource.FUSED, bounds_mm=[low, high],
+                      reason='constrained' if selected != distance else 'camera_within_bounds')
     return results
 
 
@@ -199,17 +206,17 @@ def project_bots(bots, pose):
 class BotRangeFusion:
     """One evaluation per new camera frame; diagnostic mode preserves strategy."""
 
-    def __init__(self, mode="diagnostic", config=None, record=None):
-        if mode not in {"off", "diagnostic", "active"}:
+    def __init__(self, mode=FusionMode.DIAGNOSTIC, config=None, record=None):
+        if mode not in {FusionMode.OFF, FusionMode.DIAGNOSTIC, FusionMode.ACTIVE}:
             raise ValueError("Fusion mode must be off, diagnostic or active")
-        self.mode = mode
+        self.mode = FusionMode(mode)
         self.config = config or FusionConfig()
         self.record = record
 
     def project(self, scene, lidar, current_pose, now):
         bots = scene["bots"]
         original = project_bots(bots, current_pose)
-        if self.mode == "off" or not bots:
+        if self.mode == FusionMode.OFF or not bots:
             return original
         timestamp = scene["timestamp_s"]
         context = {"reason": "missing_camera_time", "points": []}
@@ -236,4 +243,4 @@ class BotRangeFusion:
             self.record({"scene": scene, "scan": scan, "context": context,
                          "results": results, "camera_positions": original,
                          "proposed_positions": proposed, "mode": self.mode})
-        return proposed if self.mode == "active" else original
+        return proposed if self.mode == FusionMode.ACTIVE else original

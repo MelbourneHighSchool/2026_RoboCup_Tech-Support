@@ -35,8 +35,9 @@ from lib.localisation_motion import (
 )
 from lib.pcb_brightness import restore_brightness
 from lib.recording_session import RecordingSession
+from state import FusionMode, GameState, StartupStage
 
-USE_PCB = False
+USE_PCB = True
 
 LOG_FPS = 30 # How often the bot state is written to the log file
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
@@ -145,8 +146,8 @@ parser.add_argument(
     action="store_true",
     help="Print logic-loop and background-thread rates once per second.",
 )
-parser.add_argument("--bot-fusion", choices=("off", "diagnostic", "active"),
-                    default="diagnostic", help="Bot ranging mode (default: diagnostic only).")
+parser.add_argument("--bot-fusion", choices=tuple(FusionMode),
+                    default=FusionMode.DIAGNOSTIC, help="Bot ranging mode (default: diagnostic only).")
 parser.add_argument("--bot-fusion-config", metavar="JSON", help="Measured fusion tolerances.")
 parser.add_argument("--bot-fusion-log", metavar="PATH", help="New JSONL fusion diagnostic file.")
 args = parser.parse_args()
@@ -259,7 +260,7 @@ hardware_controller = None
 peer = None
 recording_session = None
 display = None
-startup_stage = "OTHER"
+startup_stage = StartupStage.OTHER
 fusion_recorder = None
 
 
@@ -357,13 +358,13 @@ try:
     mode_switch = switch.Switch(MODE_SWITCH_PIN)
     pause_switch = switch.Switch(PAUSE_SWITCH_PIN)
     bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
-    status.update(bot_mode.name, False, "STARTING", "LIDAR")
+    status.update(bot_mode.name, False, GameState.STARTING, "LIDAR")
     break_beam = Breakbeam(BREAK_BEAM_PIN)
     if args.bot_fusion_log:
         fusion_recorder = MotionCapture(args.bot_fusion_log,
                                         {"fusion_config": asdict(fusion_config)})
     print(f"Bot range fusion: {args.bot_fusion}")
-    startup_stage = "LIDAR"
+    startup_stage = StartupStage.LIDAR
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
@@ -380,8 +381,8 @@ try:
             raise KeyboardInterrupt
         time.sleep(0.1)
 
-    startup_stage = "HARDWARE"
-    status.update(bot_mode.name, False, "STARTING", "MOTORS / IMU")
+    startup_stage = StartupStage.HARDWARE
+    status.update(bot_mode.name, False, GameState.STARTING, "MOTORS / IMU")
     print(f"Initializing Hardware Controller with motor I2C addresses {I2C_ADDRESSES}...")
     hardware_controller = HardwareController.from_i2c_addresses(
         I2C_ADDRESSES,
@@ -393,10 +394,12 @@ try:
         dribbler_motor_current_limit=DRIBBLER_TORQUE,
         display=display,
         use_pcb=USE_PCB,
+        motor_hz=100,
+        pcb_hz=100
     )
     status.attach_hardware(hardware_controller)
     hardware_controller.set_drive_current_limits(CONSTANT_SPEED_TORQUE, ACCELERATION_TORQUE)
-    status.update(bot_mode.name, False, "STARTING", "IMU REFERENCE")
+    status.update(bot_mode.name, False, GameState.STARTING, "IMU REFERENCE")
     startup_yaw = capture_startup_yaw(hardware_controller)
     hardware_controller.set_startup_yaw(startup_yaw)
     print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
@@ -408,8 +411,8 @@ try:
     if line_sensor_feed.error:
         print(line_sensor_feed.error)
 
-    startup_stage = "LIDAR"
-    status.update(bot_mode.name, False, "STARTING", "FIRST POSE")
+    startup_stage = StartupStage.LIDAR
+    status.update(bot_mode.name, False, GameState.STARTING, "FIRST POSE")
     print("Waiting for first pose estimate...")
     while not lidar.is_coordinates_ready():
         if enter_pressed():
@@ -439,8 +442,8 @@ try:
         )
         print(f"Recording synchronized session to {recording_session.directory}")
 
-    startup_stage = "CAMERA"
-    status.update(bot_mode.name, False, "STARTING", "CAMERA")
+    startup_stage = StartupStage.CAMERA
+    status.update(bot_mode.name, False, GameState.STARTING, "CAMERA")
     camera = Camera(
         CAMERA_PORT,
         resolution=CAMERA_RESOLUTION,
@@ -467,7 +470,7 @@ try:
         print("Camera preview disabled (pass --camera-stream to enable MJPEG stream)")
 
     status.attach_camera(camera)
-    startup_stage = "OTHER"
+    startup_stage = StartupStage.OTHER
     if ENABLE_COMMUNICATION:
         peer = Peer(port=PEER_PORT)
         peer.start()
@@ -584,7 +587,7 @@ try:
             x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
             if x_pos is None or y_pos is None or yaw is None:
                 hardware_controller.move(0, 0, 0, 0, 0)
-                status.update(bot_mode.name, run, "BLOCKED", "WAITING FOR POSE")
+                status.update(bot_mode.name, run, GameState.BLOCKED, "WAITING FOR POSE")
                 time.sleep(0.01)
                 continue
 
@@ -805,9 +808,9 @@ except KeyboardInterrupt:
 except Exception as exc:
     if status is not None:
         # Native constructor failures already publish MOTOR/IMU details directly.
-        source = startup_stage if startup_stage != "HARDWARE" else "OTHER"
+        source = startup_stage if startup_stage != StartupStage.HARDWARE else StartupStage.OTHER
         status.report(source, exc)
-        status.update(bot_mode.name, run, "BLOCKED", "SHUTTING DOWN")
+        status.update(bot_mode.name, run, GameState.BLOCKED, "SHUTTING DOWN")
         try:
             status.poll()
         except Exception as status_error:

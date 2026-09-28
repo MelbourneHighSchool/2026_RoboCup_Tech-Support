@@ -1,18 +1,10 @@
 import math
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
+from state import BotMode
+
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.txt"  # see example_config.txt
-
-
-# Enum for bot mode. Depending on game state, the bot can change between these modes.
-# Each bot includes a mode switch, which can set the default mode to two of these, depending on the switch's position.
-# These default modes can be set in the config file.
-class BotMode(Enum):
-    DEFENCE = 1
-    GOALIE = 2
-    STRIKER = 3
 
 
 @dataclass(frozen=True)
