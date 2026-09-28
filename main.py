@@ -43,6 +43,7 @@ LOG_FPS = 30 # How often the bot state is written to the log file
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
 ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
+ENABLE_ROLE_SWITCHING = True
 USE_PAUSE = False # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
@@ -111,6 +112,7 @@ BREAK_BEAM_PIN = config.break_beam_pin
 
 # Hardware switches are initialized after the status display is available.
 bot_mode = MODE_SWITCH_OFF
+default_bot_mode = MODE_SWITCH_OFF
 
 run = not USE_PAUSE
 
@@ -358,6 +360,7 @@ try:
     mode_switch = switch.Switch(MODE_SWITCH_PIN)
     pause_switch = switch.Switch(PAUSE_SWITCH_PIN)
     bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
+    default_bot_mode = bot_mode
     status.update(bot_mode.name, False, GameState.STARTING, "LIDAR")
     break_beam = Breakbeam(BREAK_BEAM_PIN)
     if args.bot_fusion_log:
@@ -718,6 +721,12 @@ try:
                         "ball_y": ball_y,
                     }
                 )
+
+            if ENABLE_COMMUNICATION and ENABLE_ROLE_SWITCHING and default_bot_mode == BotMode.STRIKER:
+                if friendly_bot_positions == [] and not ball_captured:
+                    bot_mode = BotMode.GOALIE
+                else:
+                    bot_mode = BotMode.STRIKER
 
             if bot_mode == BotMode.DEFENCE:
                 direction, speed, rotation, controller_state, kick, dribbler = defence.defence(
