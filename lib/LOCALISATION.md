@@ -11,7 +11,7 @@ In order to measure how concentrated the weight is, a measurement called the Eff
 For every particle $i$ with a weight $w_i$ normalised so that all weights sum to 1:
 $$ESS = \frac{1}{\sum {w_i}^2}$$
 
-If all 1000 particles have an equal weight, ESS = 1000. However, if only 10 have an equal weight and all the rest have 0, ESS = 10. If $\frac{\text{ESS}}{\text{PARTICLE\_COUNT}}$ drops below ESS_RESAMPLE_FRACTION (defined in `lib/localisation.cpp`), a resample will be triggered.
+If all 1000 particles have an equal weight, ESS = 1000. However, if only 10 have an equal weight and all the rest have 0, ESS = 10. If $\frac{\text{ESS}}{\text{Particle Count}}$ drops below ESS_RESAMPLE_FRACTION (defined in `lib/localisation.cpp`), a resample will be triggered.
 
 ## Movement
 Using the above method works well to find the pose of a stationary bot. However, during gameplay, this bot is always moving. Apart from the few seconds it gets while paused before kickoff, it needs to be able to localise while constantly moving. To do this, the particle filter is advanced between lidar scans through odometry.
