@@ -69,8 +69,10 @@ def enemy_bots_ahead(bot_x, enemy_bot_positions):
     )
 
 
-def keep_motion_in_legal_area(x_pos, y_pos, direction, speed):
-    """Remove velocity components that cross a white line or the own penalty box."""
+def keep_motion_in_legal_area(
+    x_pos, y_pos, direction, speed, friendly_bot_positions=None
+):
+    """Guard white lines and the own penalty box when a teammate occupies it."""
     if direction is None or speed <= 0:
         return direction, speed
 
@@ -92,20 +94,24 @@ def keep_motion_in_legal_area(x_pos, y_pos, direction, speed):
     ):
         velocity_y = 0
 
-    # Expand the marked box by the robot radius and stopping margin so the
-    # robot body, rather than only its centre, remains outside the black lines.
-    penalty_max_x = OWN_PENALTY_MAX_X + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
-    penalty_min_y = OWN_PENALTY_MIN_Y - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN
-    penalty_max_y = OWN_PENALTY_MAX_Y + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
+    penalty_occupied = any(
+        WHITE_MIN_X <= bot_x <= OWN_PENALTY_MAX_X
+        and OWN_PENALTY_MIN_Y <= bot_y <= OWN_PENALTY_MAX_Y
+        for bot_x, bot_y in friendly_bot_positions or ()
+    )
+    if penalty_occupied:
+        penalty_max_x = OWN_PENALTY_MAX_X + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
+        penalty_min_y = OWN_PENALTY_MIN_Y - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN
+        penalty_max_y = OWN_PENALTY_MAX_Y + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN
 
-    if penalty_min_y <= y_pos <= penalty_max_y:
-        if x_pos <= penalty_max_x and velocity_x < 0:
-            velocity_x = 0
-    elif x_pos <= penalty_max_x and (
-        (y_pos < penalty_min_y and velocity_y > 0)
-        or (y_pos > penalty_max_y and velocity_y < 0)
-    ):
-        velocity_y = 0
+        if penalty_min_y <= y_pos <= penalty_max_y:
+            if x_pos <= penalty_max_x and velocity_x < 0:
+                velocity_x = 0
+        elif x_pos <= penalty_max_x and (
+            (y_pos < penalty_min_y and velocity_y > 0)
+            or (y_pos > penalty_max_y and velocity_y < 0)
+        ):
+            velocity_y = 0
 
     guarded_speed = math.hypot(velocity_x, velocity_y)
     if guarded_speed <= 1e-9:
@@ -294,6 +300,7 @@ def goal_shot_aim(
     return None, False
 
 
+SHOT_ALIGNMENT_TOLERANCE_DEG = 2
 SHOT_OPEN_HOLD_SECONDS = 0.4
 SHOT_BLOCKED_HOLD_SECONDS = 0.3
 
@@ -308,6 +315,7 @@ class StrikerState:
     blocked_since: float | None = None
     open_since: float | None = None
     repositioning: bool = False
+    capturing: bool = False
 
     def reset(self):
         self.ball_hiding = False
@@ -390,6 +398,9 @@ def striker(
         rotation = 0
         kick = False
         dribbler = 1
+        direction, speed = keep_motion_in_legal_area(
+            x_pos, y_pos, direction, speed, friendly_bot_positions
+        )
         return direction, speed, rotation, state, kick, dribbler
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
@@ -400,19 +411,22 @@ def striker(
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     dribbler = 1 # Dribbler should be on by default
     # Skip approach offset while captured: ball is in front, so direction ≈ yaw and
-    # ±80 would clear goal rotation and oscillate against facing forward (rotation=0).
-    if not ball_captured and dist < 300:
+    if not ball_captured and (dist < 400 or (dist < 500 and state.capturing)):
+        state.capturing = True
+        approach_offset = 90 * min(1.0, (300 - dist) / 150)
         if -13 < direction < 13:
             speed = 900
         elif 0 < direction < 180:
-            offset = 60
+            offset = approach_offset
         else:
-            offset = -60
-    elif dist > 500:
+            offset = -approach_offset
+    elif ball_captured:
+        state.capturing = False
+        speed = 1000
+    else:
+        state.capturing = False
         speed = 1200
         dribbler = 0
-    elif ball_captured:
-        speed = 1000
 
     # By default, the bot should not kick the ball.
     kick = False
@@ -477,7 +491,10 @@ def striker(
             elif offset == 0 and dist_to_goal < shooting_end_dist:
                 speed = 0
                 rotation = aim
-                kick = kick_direction_scores(
+                # Other rays can score via a rebound while we are still turning.
+                # Release only near the selected aim, with actual ball clearance.
+                aligned = abs(wrap_angle_deg(aim - yaw)) <= SHOT_ALIGNMENT_TOLERANCE_DEG
+                kick = aligned and kick_direction_scores(
                     ball_x, ball_y, yaw, target_x, CYAN_GOAL_MOUTH_X,
                     enemy_bot_positions,
                 )
@@ -485,7 +502,7 @@ def striker(
         dribbler = -1
 
     direction, speed = keep_motion_in_legal_area(
-        x_pos, y_pos, direction + offset, speed
+        x_pos, y_pos, direction + offset, speed, friendly_bot_positions
     )
     state.ball_hiding = ball_hiding
     return direction, speed, rotation, state, kick, dribbler

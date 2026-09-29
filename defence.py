@@ -258,10 +258,11 @@ def goalie(
             target_y = ball_y
         rotation = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos)) % 360
 
+        dist_to_ball = math.hypot(ball_x - x_pos, ball_y - y_pos)
+        if dist_to_ball < 1000:
+            dribbler = 1
+
     dribbler = 0
-    dist_to_ball = math.hypot(ball_x - x_pos, ball_y - y_pos)
-    if dist_to_ball < 1000:
-        dribbler = 1
     kick = False
     if ball_captured:
         if (yaw > 350 or yaw < 10):
