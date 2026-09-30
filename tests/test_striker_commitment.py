@@ -71,6 +71,26 @@ def test_open_lane_can_still_kick():
     assert out[4]
 
 
+def test_two_enemies_in_goal_box_do_not_block_direct_shot():
+    enemies = [(1950, 910), (2050, 910)]
+    aim, possible = striker.goal_shot_aim(
+        1800, 910, striker.CYAN_GOAL_BACK_X, striker.CYAN_GOAL_MOUTH_X,
+        enemies,
+    )
+    assert possible
+    assert abs(aim) < 2
+    assert step(striker.StrikerState(), enemies=enemies, y=910)[4]
+
+
+def test_goal_box_exception_only_ignores_bots_inside_box():
+    in_box = (1950, 910)
+    outside_box = (1820, 910)
+    assert not step(striker.StrikerState(), enemies=[in_box], y=910)[4]
+    assert not step(
+        striker.StrikerState(), enemies=[in_box, (2050, 910), outside_box], y=910
+    )[4]
+
+
 def test_different_lane_cannot_instantly_reverse_aim():
     state = striker.StrikerState(aim=30)
     assert state.select(-30, 0) == 30

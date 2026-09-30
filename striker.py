@@ -228,15 +228,27 @@ def kick_direction_scores(
     *,
     mouth_sector=None,
 ):
-    """True when the kick scores and its complete path clears every enemy bot."""
+    """True when the kick scores and its path clears relevant enemy bots."""
     if mouth_sector is None:
         mouth_sector = _mouth_sector(ball_x, ball_y, mouth_x)
     path = _scoring_path(ball_x, ball_y, angle_deg, target_x, mouth_x, mouth_sector)
     if path is None:
         return False
 
+    enemy_bots = tuple(enemy_bot_positions or ())
+    bots_in_goal_box = sum(
+        ENEMY_PENALTY_MIN_X <= bot_x <= ENEMY_PENALTY_MAX_X
+        and ENEMY_PENALTY_MIN_Y <= bot_y <= ENEMY_PENALTY_MAX_Y
+        for bot_x, bot_y, *_ in enemy_bots
+    )
     clearance = ROBOT_RADIUS + BALL_RADIUS
-    for bot_x, bot_y, *_ in enemy_bot_positions or ():
+    for bot_x, bot_y, *_ in enemy_bots:
+        if (
+            bots_in_goal_box >= 2
+            and ENEMY_PENALTY_MIN_X <= bot_x <= ENEMY_PENALTY_MAX_X
+            and ENEMY_PENALTY_MIN_Y <= bot_y <= ENEMY_PENALTY_MAX_Y
+        ):
+            continue
         if any(
             _point_to_segment_distance(bot_x, bot_y, start, end) <= clearance
             for start, end in path
