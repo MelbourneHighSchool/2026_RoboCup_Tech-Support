@@ -90,6 +90,7 @@ static void timing_and_readiness() {
     assert(loc_get_line_readings().applied_count == 0);
     submit(sample_for({350,900,0,1},now-0.01));
     apply_pending_line_readings_locked(now+1);
+    publish_locked();
     assert(!loc_get_line_readings().valid && loc_get_line_readings().applied_count == 0);
 
     // Even after a LIDAR confidence dip, PCB may move the estimate but not validate it.

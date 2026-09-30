@@ -5,6 +5,9 @@
 #include <cmath>
 #include <deque>
 #include <mutex>
+#include <memory>
+#include <atomic>
+#include <thread>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -166,6 +169,39 @@ static double monotonic_time_s() {
     return std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+// Reduce latency from fetching a new pose from main.py by keeping a published state.
+struct PublishedState {
+    LocPoseSnapshot info;
+    motion::History motion;
+    LocLineReadings lines;
+    LocDeskewStatus deskew;
+    LocScanCorrection correction = {};
+    LocRecoveryStatus recovery = {};
+    std::vector<Segment> segments;
+    double replay_time = -1, mount_forward = 0, mount_left = 0, mount_yaw = 0;
+    double pitch_x = 2430, pitch_y = 1820;
+};
+static std::shared_ptr<const PublishedState> g_publication = std::make_shared<PublishedState>();
+static std::uint64_t g_prediction_count = 0;
+static std::atomic<unsigned> g_test_scan_delay_ms{0};
+void loc_test_scan_delay(unsigned milliseconds) { g_test_scan_delay_ms = milliseconds; }
+static void publish_locked() {
+    auto state = std::make_shared<PublishedState>();
+    state->info.pose = g_pose; state->info.timestamp_s = g_pose_time;
+    state->info.epoch = g_motion_epoch; state->info.prediction_count = g_prediction_count;
+    state->info.ready = g_ready && g_pose.ok;
+    state->motion = g_motion; state->lines = g_line_readings;
+    state->deskew = g_deskew_status; state->correction = g_last_scan_correction;
+    state->recovery = {g_last_scan_quality, g_scan_quality_baseline, g_bad_scan_count,
+        std::max(EXPLORATION_FRACTION, g_recovery_fraction), g_scan_quality_baseline_valid};
+    state->segments = g_static_segments; state->replay_time = g_replay_time;
+    state->mount_forward = g_mount_forward; state->mount_left = g_mount_left; state->mount_yaw = g_mount_yaw;
+    state->pitch_x = g_pitch_x; state->pitch_y = g_pitch_y;
+    std::atomic_store(&g_publication, std::shared_ptr<const PublishedState>(std::move(state)));
+}
+struct PublishOnExit { ~PublishOnExit() { publish_locked(); } }; // Destroy before releasing g_loc_mutex.
+LocPoseSnapshot loc_get_pose_snapshot() { return std::atomic_load(&g_publication)->info; }
 
 // Propagate a particle between lidar scans using odometry.
 static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s, bool add_noise) {
@@ -766,26 +802,27 @@ void loc_configure_deskew(const std::string& mode, double forward, double left, 
         !std::isfinite(forward) || !std::isfinite(left) || !std::isfinite(yaw))
         throw std::invalid_argument("Expected off/rotation/full and finite mount offsets");
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     g_deskew_mode=mode; g_mount_forward=forward; g_mount_left=left; g_mount_yaw=yaw;
 }
 LocFusionContext loc_fusion_context(const std::vector<LocScanPoint>& points,
                                    double reference_time_s, double max_delta_s) {
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    const auto state = std::atomic_load(&g_publication);
     LocFusionContext out;
-    const double now = monotonic_time_s();
+    const double now = state->replay_time >= 0 ? state->replay_time : monotonic_time_s();
     if (!std::isfinite(reference_time_s) || !std::isfinite(max_delta_s) ||
         max_delta_s <= 0 || reference_time_s <= 0 || reference_time_s > now ||
         now-reference_time_s > 0.25) { out.reason="stale_camera"; return out; }
-    if (!g_pose.ok || g_pose.confidence < 0.7f) {
+    if (!state->info.pose.ok || state->info.pose.confidence < 0.7f) {
         out.reason="uncertain_pose"; return out;
     }
     motion::Transform current;
-    if (!g_timed_motion || g_pose_time <= 0 || now-g_pose_time > 0.25 ||
-        !g_motion.relative(reference_time_s,g_pose_time,true,current)) return out;
+    if (!(state->info.timestamp_s > 0) || state->info.timestamp_s <= 0 || now-state->info.timestamp_s > 0.25 ||
+        !state->motion.relative(reference_time_s,state->info.timestamp_s,true,current)) return out;
     // Rewind the corrected pose; never apply present heading to an old bearing.
     // Motion history is cleared when the hardware's yaw epoch changes.
-    out.pose = g_pose;
-    out.pose.yaw_deg = wrap_angle_deg(g_pose.yaw_deg-current.yaw);
+    out.pose = state->info.pose;
+    out.pose.yaw_deg = wrap_angle_deg(state->info.pose.yaw_deg-current.yaw);
     const double c=std::cos(out.pose.yaw_deg*motion::RAD);
     const double s=std::sin(out.pose.yaw_deg*motion::RAD);
     out.pose.x -= c*current.x-s*current.y;
@@ -796,17 +833,17 @@ LocFusionContext loc_fusion_context(const std::vector<LocScanPoint>& points,
             !std::isfinite(p.time_s) || p.time_s <= 0 ||
             std::abs(p.time_s-reference_time_s) > max_delta_s) continue;
         motion::Transform beam;
-        if (!g_motion.relative(reference_time_s,p.time_s,true,beam)) {
-            out.points.clear(); out.reason="missing_motion"; return out;
+        if (!state->motion.relative(reference_time_s,p.time_s,true,beam)) {
+            out.points.clear(); out.reason="missinstate->motion"; return out;
         }
         const double bc=std::cos(beam.yaw*motion::RAD), bs=std::sin(beam.yaw*motion::RAD);
-        const double angle=(p.angle_deg+g_mount_yaw+beam.yaw)*motion::RAD;
-        const double x=beam.x+bc*g_mount_forward+bs*g_mount_left+p.distance_mm*std::cos(angle);
-        const double y=beam.y+bs*g_mount_forward-bc*g_mount_left+p.distance_mm*std::sin(angle);
+        const double angle=(p.angle_deg+state->mount_yaw+beam.yaw)*motion::RAD;
+        const double x=beam.x+bc*state->mount_forward+bs*state->mount_left+p.distance_mm*std::cos(angle);
+        const double y=beam.y+bs*state->mount_forward-bc*state->mount_left+p.distance_mm*std::sin(angle);
         const double wx=out.pose.x+c*x-s*y, wy=out.pose.y+s*x+c*y;
-        double distance=std::min(std::min(wx,double(g_pitch_x)-wx),
-                                 std::min(wy,double(g_pitch_y)-wy));
-        for (const auto& seg : g_static_segments) {
+        double distance=std::min(std::min(wx,double(state->pitch_x)-wx),
+                                 std::min(wy,double(state->pitch_y)-wy));
+        for (const auto& seg : state->segments) {
             const double dx=seg.x2-seg.x1, dy=seg.y2-seg.y1;
             const double length2=dx*dx+dy*dy;
             const double t=length2 > 0 ? std::max(0.0,std::min(1.0,
@@ -820,7 +857,7 @@ LocFusionContext loc_fusion_context(const std::vector<LocScanPoint>& points,
 }
 
 LocDeskewStatus loc_get_deskew_status() {
-    std::lock_guard<std::mutex> lock(g_loc_mutex); return g_deskew_status;
+    return std::atomic_load(&g_publication)->deskew;
 }
 std::vector<std::array<double, 5>> loc_preview_scan(const std::vector<LocScanPoint>& points, double time_s) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
@@ -839,7 +876,8 @@ std::vector<std::array<double, 5>> loc_preview_scan(const std::vector<LocScanPoi
 }
 void loc_set_replay_time(double time) {
     if (!std::isfinite(time)) throw std::invalid_argument("Non-finite replay time");
-    std::lock_guard<std::mutex> lock(g_loc_mutex); g_replay_time=time;
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication; g_replay_time=time;
 }
 void loc_seed(unsigned seed) {
     std::lock_guard<std::mutex> lock(g_loc_mutex); g_rng.seed(seed);
@@ -852,6 +890,7 @@ static void clear_motion_history() {
 
 void loc_init_map(float pitch_x, float pitch_y) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     g_pitch_x = pitch_x;
     g_pitch_y = pitch_y;
     g_static_segments.clear();
@@ -878,7 +917,9 @@ void loc_set_imu_yaw(float yaw_deg) {
 
 void loc_start(bool use_pcb) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     clear_motion_history();
+    g_prediction_count = 0;
     g_use_pcb = use_pcb;
     g_last_line_used_timestamp = 0;
     g_line_readings = {};
@@ -893,6 +934,7 @@ void loc_start(bool use_pcb) {
 
 void loc_stop() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     clear_motion_history();
     g_use_pcb = false;
     g_last_line_used_timestamp = 0;
@@ -909,6 +951,7 @@ void loc_stop() {
 
 void loc_reset() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     clear_motion_history();
     g_last_line_used_timestamp = 0;
     g_line_readings = {};
@@ -940,6 +983,7 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
     }
 
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     if (g_timed_motion)
         throw std::logic_error("Cannot mix legacy prediction with timestamped motion; restart localisation");
     if (!g_started || g_particles.empty()) {
@@ -954,6 +998,8 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
     }
 
     const double end_time_s = monotonic_time_s();
+    g_pose_time = end_time_s;
+    ++g_prediction_count;
     // Legacy callers also keep contiguous history intervals even if lock wait
     // or scoring time changes between calls. Scale the recorded rates so the
     // whole interval exactly reproduces the motion integrated with caller dt.
@@ -991,11 +1037,12 @@ void loc_feed_motion(double vx, double vy, double time_s, double read_span_s,
             if (!std::isfinite(v.time) || v.time <= 0 || !std::isfinite(v.value))
                 throw std::invalid_argument("Invalid timestamped IMU sample");
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     if (!g_started) return;
     const double now=monotonic_time_s();
     if (time_s > now || now-time_s > 0.5) return;
     if (!g_timed_motion || epoch != g_motion_epoch) {
-        clear_motion_history(); g_imu_yaw_valid=false;
+        clear_motion_history(); g_imu_yaw_valid=false; g_pose.ok=false;
         g_motion_epoch=epoch; g_timed_motion=true;
     }
     for (const auto& v : yaw)
@@ -1038,6 +1085,7 @@ void loc_feed_motion(double vx, double vy, double time_s, double read_span_s,
         g_odometry_history.push_back({cuts[i-1],cuts[i],float(x),float(y),float(omega)});
     }
     g_pose_time=end;
+    ++g_prediction_count;
     while (!g_odometry_history.empty() && g_odometry_history.front().end_time_s < end-2)
         g_odometry_history.pop_front();
     if (g_ready) g_pose=estimate_pose_from_particles(nullptr,0);
@@ -1147,6 +1195,9 @@ void loc_update_scan(const LocScanPoint* points, int count,
         points, count, min_range_mm, max_range_mm, min_quality);
 
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
+    const auto delay = g_test_scan_delay_ms.exchange(0);
+    if (delay) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
     const auto sequence=g_deskew_status.sequence+1;
     g_deskew_status={}; g_deskew_status.sequence=sequence;
     g_deskew_status.mode=g_deskew_mode; g_deskew_status.scan_time_s=scan_time_s;
@@ -1377,6 +1428,7 @@ void loc_set_line_readings(const std::vector<std::string>& colours, double times
         if (colour != "black" && colour != "green" && colour != "white")
             throw std::invalid_argument("Line colour must be black, green, or white");
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     const double now = monotonic_time_s();
     if (timestamp_s > now || now - timestamp_s > 0.5 ||
         timestamp_s <= g_line_readings.timestamp_s ||
@@ -1390,46 +1442,28 @@ void loc_set_line_readings(const std::vector<std::string>& colours, double times
 
 void loc_clear_line_readings() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
+    PublishOnExit publication;
     g_line_readings.valid = false;
 }
 
 LocLineReadings loc_get_line_readings() {
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
-    auto result = g_line_readings;
-    const double age = monotonic_time_s() - result.timestamp_s;
+    const auto state = std::atomic_load(&g_publication);
+    auto result = state->lines;
+    const double now = state->replay_time >= 0 ? state->replay_time : monotonic_time_s();
+    const double age = now - result.timestamp_s;
     result.valid = result.valid && age >= 0 && age <= 0.5;
     return result;
 }
-
-bool loc_scan_updates_allowed() {
+bool loc_scan_updates_allowed() { return true; }
+bool loc_is_ready() { return loc_get_pose_snapshot().ready; }
+LocPose loc_get_pose() { return loc_get_pose_snapshot().pose; }
+LocScanCorrection loc_get_last_scan_correction() { return std::atomic_load(&g_publication)->correction; }
+LocRecoveryStatus loc_get_recovery_status() { return std::atomic_load(&g_publication)->recovery; }
+void loc_motion_discontinuity() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
-    return true; // Compatibility API: angular speed no longer gates scan corrections.
-}
-
-bool loc_is_ready() {
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
-    return g_ready && g_pose.ok;
-}
-
-LocPose loc_get_pose() {
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
-    return g_pose;
-}
-
-LocScanCorrection loc_get_last_scan_correction() {
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
-    return g_last_scan_correction;
-}
-
-LocRecoveryStatus loc_get_recovery_status() {
-    std::lock_guard<std::mutex> lock(g_loc_mutex);
-    return {
-        g_last_scan_quality,
-        g_scan_quality_baseline,
-        g_bad_scan_count,
-        std::max(EXPLORATION_FRACTION, g_recovery_fraction),
-        g_scan_quality_baseline_valid
-    };
+    clear_motion_history();
+    g_pose.ok = false;
+    publish_locked();
 }
 
 std::vector<LocParticle> loc_get_particles() {

@@ -159,7 +159,8 @@ class Hardware:
             )
             startup = capture_startup_yaw(imu, cancel_event=cancel)
             feed_imu_yaw_prior(lidar, imu, startup)
-            lidar.start_coordinates(*PITCH, use_pcb=self.use_pcb)
+            lidar.start_coordinates(*PITCH, use_pcb=self.use_pcb,
+                                    motion_source=imu.motion_source, prediction_hz=rates["odometry_hz"])
             line_feed = LineSensorFeed(self.root / "line_sensor_calibration.json", use_pcb=self.use_pcb)
             if line_feed.error:
                 self.notify(line_feed.error, error=True)

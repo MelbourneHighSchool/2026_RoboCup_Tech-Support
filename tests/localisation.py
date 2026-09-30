@@ -557,7 +557,8 @@ def main():
 
         lidar.set_motion_noise(args.motion_noise)
         print(f"Motion noise coefficient: {args.motion_noise:g} sqrt(s)")
-        lidar.start_coordinates(PITCH_X, PITCH_Y, use_pcb=USE_PCB)
+        lidar.start_coordinates(PITCH_X, PITCH_Y, use_pcb=USE_PCB,
+                                motion_source=imu.motion_source if args.raw_odometry else None, prediction_hz=100)
         os.environ["SOCCER_DESKEW"] = args.deskew
         if args.record_motion:
             os.environ["SOCCER_LOCALISATION_RECORD"] = args.record_motion

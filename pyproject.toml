@@ -6,6 +6,7 @@ python_files = [
     "recording_session.py",
     "session_replay.py",
     "camera_recording.py",
+    "test_worker_scheduling.py",
 ]
 python_functions = [
     "test_*",

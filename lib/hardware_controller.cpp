@@ -188,6 +188,8 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
         init_source = "IMU";
         init_address = -1;
         imu_->initialize();
+        init_source = "MOTOR";
+        motion_source_->publish(read_odometry_locked());
         bus_lock.unlock();
         imu_ready_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         init_source = "OTHER";
@@ -302,6 +304,7 @@ void HardwareController::fail(const std::string& message, const std::string& sou
         display_->set_native_blocked(true);
     }
     running_ = false;
+    motion_source_->close();
     wake_.notify_all();
 }
 void HardwareController::set_drive_current_limits(double constant_speed_amps, double acceleration_amps) {
@@ -318,29 +321,27 @@ std::pair<double, double> HardwareController::get_measured_body_velocity_mm_s(do
     return {sample.vx, sample.vy};
 }
 HardwareController::LocalisationSample HardwareController::get_localisation_sample() {
-    const auto requested = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> bus_lock(wire_->mutex);
-    {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        check_state();
+    { std::lock_guard<std::mutex> lock(state_mutex_); check_state(); }
+    return motion_source_->latest();
+}
+HardwareController::LocalisationSample HardwareController::read_odometry_locked() {
+    const auto started = std::chrono::steady_clock::now();
+    std::array<double, 4> rpms;
+    for (size_t i = 0; i < rpms.size(); ++i) {
+        motor_operation(i, [&] { motors_[i].updateQuickDataReadout(); });
+        rpms[i] = motors_[i].getSpeedQDR() / RPM_TO_MOTOR_SPEED;
     }
-    try {
-        const auto started = std::chrono::steady_clock::now();
-        std::array<double, 4> rpms;
-        for (size_t i = 0; i < rpms.size(); ++i) {
-            motor_operation(i, [&] { motors_[i].updateQuickDataReadout(); });
-            rpms[i] = motors_[i].getSpeedQDR() / RPM_TO_MOTOR_SPEED;
-        }
-        const auto ended = std::chrono::steady_clock::now();
-        const auto velocity = body_velocity(rpms, config_.diameter);
-        const double span = std::chrono::duration<double>(ended-started).count();
-        record_timing("odometry", std::chrono::duration<double>(started-requested).count(), span);
-        const double timestamp = std::chrono::duration<double>(started.time_since_epoch()).count()+span/2;
-        return {velocity.first, velocity.second, timestamp, span, imu_->history()};
-    } catch (const std::exception& exc) {
-        fail(exc.what());
-        throw MotorCommunicationError(exc.what());
-    }
+    const auto ended = std::chrono::steady_clock::now();
+    const auto velocity = body_velocity(rpms, config_.diameter);
+    const double span = std::chrono::duration<double>(ended-started).count();
+    record_timing("odometry", 0, span);
+    LocalisationSample sample;
+    sample.vx = velocity.first; sample.vy = velocity.second;
+    sample.timestamp_s = std::chrono::duration<double>(started.time_since_epoch()).count()+span/2;
+    sample.read_span_s = span;
+    const auto history = imu_->history();
+    sample.imu.epoch = history.epoch; sample.imu.yaw = history.yaw; sample.imu.gyro = history.gyro;
+    return sample;
 }
 double HardwareController::get_dribbler_rpm() {
     std::lock_guard<std::mutex> bus_lock(wire_->mutex);
@@ -395,6 +396,7 @@ void HardwareController::stop() {
         }
     }
     if (thread_.joinable()) thread_.join();
+    motion_source_->close();
     if (imu_thread_.joinable()) imu_thread_.join();
     std::lock_guard<std::mutex> bus_lock(wire_->mutex);
     imu_->close();
@@ -582,31 +584,37 @@ void HardwareController::drive_loop() noexcept {
             }
             const auto requested = Clock::now();
             // Acquire lock on i2c bus
-            std::lock_guard<std::mutex> bus_lock(wire_->mutex);
-            if (!running_) break;
-            const auto acquired = Clock::now();
-            // Read after acquiring the bus: an IMU operation may have delayed this tick.
-            const auto imu = imu_->snapshot();
-            command.yaw = imu.last_yaw;
-            if (!imu.yaw) command.rotation_speed = 0;
-            const auto rpms = calculate_drive_rpms(command, config_);
-            // Wheel target changes include translation ramps, braking and yaw corrections.
-            bool accelerating = false;
-            for (size_t i = 0; i < rpms.size(); ++i)
-                accelerating |= std::abs(rpms[i] - previous_rpms[i]) > 0.1;
-            const auto current_limit = accelerating ? accelerating_current : steady_current;
-            if (current_limit != applied_current_limit) {
+            LocalisationSample odometry;
+            Clock::time_point acquired;
+            {
+                std::lock_guard<std::mutex> bus_lock(wire_->mutex);
+                if (!running_) break;
+                acquired = Clock::now();
+                // Read after acquiring the bus: an IMU operation may have delayed this tick.
+                const auto imu = imu_->snapshot();
+                command.yaw = imu.last_yaw;
+                if (!imu.yaw) command.rotation_speed = 0;
+                const auto rpms = calculate_drive_rpms(command, config_);
+                // Wheel target changes include translation ramps, braking and yaw corrections.
+                bool accelerating = false;
                 for (size_t i = 0; i < rpms.size(); ++i)
-                    motor_operation(i, [&] { motors_[i].setCurrentLimitFOC(current_limit); });
-                applied_current_limit = current_limit;
+                    accelerating |= std::abs(rpms[i] - previous_rpms[i]) > 0.1;
+                const auto current_limit = accelerating ? accelerating_current : steady_current;
+                if (current_limit != applied_current_limit) {
+                    for (size_t i = 0; i < rpms.size(); ++i)
+                        motor_operation(i, [&] { motors_[i].setCurrentLimitFOC(current_limit); });
+                    applied_current_limit = current_limit;
+                }
+                previous_rpms = rpms;
+                // Send motor commands
+                for (size_t i = 0; i < rpms.size(); ++i)
+                    motor_operation(i, [&] { motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED)); });
+                // Spin the dribbler, if configured
+                if (motors_.size() > 4)
+                    motor_operation(4, [&] { motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_); });
+                odometry = read_odometry_locked();
             }
-            previous_rpms = rpms;
-            // Send motor commands
-            for (size_t i = 0; i < rpms.size(); ++i)
-                motor_operation(i, [&] { motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED)); });
-            // Spin the dribbler, if configured
-            if (motors_.size() > 4)
-                motor_operation(4, [&] { motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_); });
+            motion_source_->publish(std::move(odometry));
             ++loop_count_;
             const auto completed = Clock::now();
             record_timing("motor", std::chrono::duration<double>(acquired - requested).count(),

@@ -14,6 +14,7 @@ static void setup(double omega=0, double vx=0, double vy=0) {
         motion::History::append(g_motion.yaw,t,0);
         g_motion.wheels.push_back({t,vx,vy});
     }
+    publish_locked();
 }
 
 int main() {
@@ -39,7 +40,7 @@ int main() {
         }
     }
     setup(); loc_configure_deskew("full",0,0,0);
-    g_pose={1000,800,0,0.9,true};
+    g_pose={1000,800,0,0.9,true}; publish_locked();
     auto wall=loc_fusion_context({{0,1430,30,true,10}},10,0.05);
     assert(wall.points.size()==1 && std::abs(wall.points[0][4]) < 0.001);
     // Goal front endpoint (post) is part of the static-map veto.
@@ -52,11 +53,11 @@ int main() {
     assert(filtered.points.empty());
     assert(loc_fusion_context({},9,0.05).reason=="stale_camera");
     assert(loc_fusion_context({},11,0.05).reason=="stale_camera");
-    g_pose.confidence=0.4;
+    g_pose.confidence=0.4; publish_locked();
     assert(loc_fusion_context({},10,0.05).reason=="uncertain_pose");
-    g_pose.confidence=0.9; g_motion.wheels.clear();
+    g_pose.confidence=0.9; g_motion.wheels.clear(); publish_locked();
     assert(loc_fusion_context({},10,0.05).reason=="missing_motion");
-    setup(); clear_motion_history();
+    setup(); clear_motion_history(); publish_locked();
     assert(loc_fusion_context({},10,0.05).reason=="missing_motion");
     std::cout << "Native bot fusion geometry/timing passed\n";
 }

@@ -88,6 +88,10 @@ PYBIND11_MODULE(hardware_controller, module) {
              py::arg("health"), py::arg("error") = "")
         .def_property_readonly("error", &hardware::StatusDisplay::error)
         .def("stop", &hardware::StatusDisplay::stop, py::call_guard<py::gil_scoped_release>());
+    py::class_<hardware::MotionSource, std::shared_ptr<hardware::MotionSource>>(module, "MotionSource")
+        .def_property_readonly("count", &hardware::MotionSource::count)
+        .def_property_readonly("dropped", &hardware::MotionSource::dropped)
+        .def_property_readonly("depth", &hardware::MotionSource::depth);
     py::class_<HardwareController>(module, "HardwareController")
         .def_static("from_i2c_addresses", &from_addresses,
             py::arg("i2c_addresses"), py::arg("diameter"), py::arg("max_yaw_rpm"),
@@ -101,6 +105,7 @@ PYBIND11_MODULE(hardware_controller, module) {
             py::arg("kick_pulse_length") = 0.02, py::arg("kick_cooldown") = 0.5,
             py::arg("display") = nullptr, py::arg("use_pcb") = false,
             py::arg("motor_hz") = 50, py::arg("pcb_hz") = 50, py::arg("imu_poll_hz") = 500)
+        .def_property_readonly("motion_source", &HardwareController::motion_source)
         .def("timing_diagnostics", &HardwareController::timing_diagnostics)
         .def("move", &HardwareController::move, py::arg("direction"), py::arg("speed"),
              py::arg("rotation"), py::arg("rotation_speed"),

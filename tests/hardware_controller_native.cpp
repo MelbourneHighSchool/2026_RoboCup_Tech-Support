@@ -347,6 +347,40 @@ void configurable_polling() {
         }
     }
 }
+void cached_odometry_and_queue() {
+    auto state = std::make_shared<State>();
+    auto transport = std::make_unique<FakeWire>(state);
+    auto* bus = transport.get();
+    HardwareController controller(calibration(4), config, "", std::move(transport),
+        0x4a, 10, -1, "", nullptr, 8, 1, 0.02, 0.5, nullptr, false, 100);
+    auto source = controller.motion_source();
+    source->claim();
+    throws([&] { source->claim(); });
+    controller.move(0, 500, 0, 0);
+    wait_ticks(controller, 75); // No localisation consumer: drive must never wait for it.
+    assert(source->dropped() > 0 && source->depth() == 64);
+    {
+        std::lock_guard<std::mutex> bus_lock(bus->mutex);
+        const auto count = source->count();
+        const auto cached = controller.get_localisation_sample();
+        assert(cached.timestamp_s > 0 && cached.read_span_s > 0);
+        for (int i=0; i<100; ++i) {
+            assert(controller.get_localisation_sample().sequence == cached.sequence);
+            controller.get_measured_body_velocity_mm_s(0);
+        }
+        assert(source->count() == count);
+    }
+    auto batch = source->drain();
+    assert(batch.discontinuity && batch.samples.size() == 64);
+    for (size_t i=1; i<batch.samples.size(); ++i) {
+        assert(batch.samples[i].sequence > batch.samples[i-1].sequence);
+        assert(batch.samples[i].timestamp_s > batch.samples[i-1].timestamp_s);
+    }
+    controller.stop();
+    assert(source->drain().closed);
+    source->release();
+}
+
 void lifecycle(int count) {
     auto state = std::make_shared<State>();
     HardwareController controller(calibration(count), config, "unused", std::make_unique<FakeWire>(state),
@@ -388,6 +422,7 @@ void lifecycle(int count) {
     assert(controller.loop_count() == ticks);
     const auto timing = controller.timing_diagnostics();
     assert(timing.at("motor_count") == ticks);
+    assert(controller.motion_source()->count() == ticks + 1);
     assert(timing.at("motor_work_s") > 0);
     assert(timing.at("imu_poll_count") > 0);
     std::lock_guard<std::mutex> lock(state->mutex);
@@ -726,6 +761,7 @@ int main() {
     imu_protocol();
     kinematics();
     configurable_polling();
+    cached_odometry_and_queue();
     lifecycle(4);
     lifecycle(5);
     capped_acceleration();

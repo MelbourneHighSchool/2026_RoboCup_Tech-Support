@@ -1,5 +1,7 @@
 import math
 
+import pytest
+
 import striker
 
 
@@ -58,7 +60,8 @@ def test_capture_loss_resets_commitment_and_robots_do_not_share_state():
     assert first.repositioning
     assert second.aim is not None
     step(first, captured=False)
-    assert first == striker.StrikerState()
+    # Capture loss resets shot commitment; the close-ball approach starts anew.
+    assert first == striker.StrikerState(capturing=True)
 
 
 def test_open_lane_can_still_kick():
@@ -75,3 +78,50 @@ def test_different_lane_cannot_instantly_reverse_aim():
     assert state.select(-30, 0.4) is None
     assert state.select(-30, 0.5) is None
     assert state.select(-30, 1.0) == -30
+
+
+@pytest.mark.parametrize("y, early_yaw", [(600, 25), (1220, -25)])
+def test_side_capture_waits_for_selected_aim_even_when_rebound_scores(y, early_yaw):
+    state = striker.StrikerState()
+    out = step(state, yaw=early_yaw, y=y)
+    ball_x = 1800 + 100 * math.cos(math.radians(early_yaw))
+    ball_y = y + 100 * math.sin(math.radians(early_yaw))
+    # This alternate scoring ray used to trigger a kick during the turn.
+    assert striker.kick_direction_scores(
+        ball_x, ball_y, early_yaw,
+        striker.CYAN_GOAL_BACK_X, striker.CYAN_GOAL_MOUTH_X,
+    )
+    assert not state.ball_hiding
+    assert out[1] == 0
+    assert abs(striker.wrap_angle_deg(out[2] - early_yaw)) > 10
+    assert not out[4]
+    assert out[5] == 1
+
+    aligned = step(state, yaw=state.aim, y=y, now=0.1)
+    assert aligned[4]
+    assert aligned[5] == -1
+
+
+@pytest.mark.parametrize("y", [400, 500, 600, 1220, 1320, 1420])
+def test_side_rotation_only_kicks_near_aim_and_with_clear_ball_path(y):
+    state = striker.StrikerState()
+    kicks = []
+    for yaw in range(-90, 91):
+        out = step(state, yaw=yaw, y=y)
+        if out[4]:
+            kicks.append(yaw)
+            assert abs(striker.wrap_angle_deg(out[2] - yaw)) <= 2
+            assert striker.kick_direction_scores(
+                1800 + 100 * math.cos(math.radians(yaw)),
+                y + 100 * math.sin(math.radians(yaw)),
+                yaw, striker.CYAN_GOAL_BACK_X, striker.CYAN_GOAL_MOUTH_X,
+            )
+    assert kicks
+
+
+def test_shot_alignment_wraps_yaw_at_360_degrees():
+    state = striker.StrikerState()
+    step(state, y=1220)
+    assert state.aim < 0
+    out = step(state, yaw=state.aim + 360, y=1220, now=0.1)
+    assert out[4]

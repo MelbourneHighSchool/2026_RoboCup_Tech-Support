@@ -18,6 +18,9 @@
 #include <vector>
 #include <stdexcept>
 #include <deque>
+#include <condition_variable>
+#include <memory>
+#include "motion_source.h"
 
 #include "localisation.h"
 #include "scan_timing.h"
@@ -52,6 +55,70 @@ static std::atomic<std::uint64_t> g_scan_generation{0};
 
 static std::atomic<bool> g_loc_running{false};
 static std::thread g_loc_thread;
+
+static std::shared_ptr<hardware::MotionSource> g_motion_source;
+static std::atomic<bool> g_autonomous{false};
+static double g_prediction_hz = 100;
+static std::mutex g_worker_mutex;
+static std::condition_variable g_worker_wake;
+static std::atomic<std::uint64_t> g_prediction_ticks{0}, g_prediction_overruns{0}, g_prediction_work_us{0};
+static std::string g_worker_error;
+static std::atomic<std::uint64_t> g_skipped_scans{0};
+struct PendingInputs {
+    int yaw_action = 0, line_action = 0;
+    float yaw = 0;
+    std::vector<std::string> colours;
+    double line_time = 0;
+};
+static PendingInputs g_pending_inputs;
+struct LocalisationEvent {
+    std::string type;
+    double recorded = 0;
+    hardware::MotionSample motion;
+    CapturedScan scan;
+    LocLineReadings floor;
+};
+static std::deque<LocalisationEvent> g_localisation_events;
+static std::uint64_t g_event_dropped = 0;
+static void capture_event(LocalisationEvent event) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    if (!g_capture_enabled) return;
+    if (g_localisation_events.size() == 256) { g_localisation_events.pop_front(); ++g_event_dropped; }
+    event.recorded = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    g_localisation_events.push_back(std::move(event));
+}
+static void apply_inputs() {
+    PendingInputs inputs;
+    { std::lock_guard<std::mutex> lock(g_worker_mutex); std::swap(inputs, g_pending_inputs); }
+    if (inputs.yaw_action == 1) loc_set_imu_yaw(inputs.yaw);
+    else if (inputs.yaw_action == 2) loc_clear_imu_yaw();
+    if (inputs.line_action == 1) {
+        loc_set_line_readings(inputs.colours, inputs.line_time);
+        LocalisationEvent event; event.type = "floor"; event.floor = loc_get_line_readings(); capture_event(std::move(event));
+    } else if (inputs.line_action == 2) loc_clear_line_readings();
+}
+static void set_yaw_input(float yaw) {
+    if (!std::isfinite(yaw)) throw std::invalid_argument("Non-finite IMU yaw");
+    if (!g_autonomous.load()) { loc_set_imu_yaw(yaw); return; }
+    std::lock_guard<std::mutex> lock(g_worker_mutex); g_pending_inputs.yaw_action = 1; g_pending_inputs.yaw = yaw;
+}
+static void clear_yaw_input() {
+    if (!g_autonomous.load()) { loc_clear_imu_yaw(); return; }
+    std::lock_guard<std::mutex> lock(g_worker_mutex); g_pending_inputs.yaw_action = 2;
+}
+static void set_line_input(const std::vector<std::string>& colours, double stamp) {
+    if (colours.size() != PCB_SENSOR_COUNT || !std::isfinite(stamp) || stamp <= 0)
+        throw std::invalid_argument("Expected 30 colours and a positive finite timestamp");
+    for (const auto& colour : colours) if (colour != "black" && colour != "white" && colour != "green")
+        throw std::invalid_argument("Invalid floor colour");
+    if (!g_autonomous.load()) { loc_set_line_readings(colours, stamp); return; }
+    std::lock_guard<std::mutex> lock(g_worker_mutex);
+    g_pending_inputs.line_action = 1; g_pending_inputs.colours = colours; g_pending_inputs.line_time = stamp;
+}
+static void clear_line_input() {
+    if (!g_autonomous.load()) { loc_clear_line_readings(); return; }
+    std::lock_guard<std::mutex> lock(g_worker_mutex); g_pending_inputs.line_action = 2;
+}
 
 static constexpr float MIN_RANGE_MM = 80.0f;
 static constexpr float MAX_RANGE_MM = 6000.0f;
@@ -120,7 +187,7 @@ static void scan_thread_func() {
 
             {
                 std::lock_guard<std::mutex> lock(g_data_mutex);
-                if (g_capture_enabled) {
+                if (g_capture_enabled && !g_autonomous.load()) {
                     if (g_capture_scans.size() >= 64) { g_capture_scans.pop_front(); ++g_capture_dropped; }
                     g_capture_scans.push_back({midpoint_s,scan_end_time_s,new_scan});
                 }
@@ -140,51 +207,61 @@ static void scan_thread_func() {
 }
 
 static void localization_thread_func() {
-    std::uint64_t last_processed_generation = 0;
-    while (g_loc_running.load()) {
-        if (!g_scan_ready.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
+    using Clock = std::chrono::steady_clock;
+    const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / g_prediction_hz));
+    auto next = Clock::now();
+    const auto source = std::atomic_load(&g_motion_source);
+    std::uint64_t last_processed_generation = 0, last_recorded_generation = 0;
+    try {
+        while (g_loc_running.load()) {
+            const auto started = Clock::now();
+            if (source) {
+                auto batch = source->drain();
+                if (batch.closed) { loc_motion_discontinuity(); break; }
+                if (batch.discontinuity) loc_motion_discontinuity();
+                for (const auto& sample : batch.samples) {
+                    std::vector<motion::Value> yaw, gyro;
+                    for (const auto& v : sample.imu.yaw) yaw.push_back({v.first, v.second});
+                    for (const auto& v : sample.imu.gyro) gyro.push_back({v.first, v.second});
+                    loc_feed_motion(sample.vx, sample.vy, sample.timestamp_s, sample.read_span_s, yaw, gyro, sample.imu.epoch);
+                    LocalisationEvent event; event.type = "motion"; event.motion = sample; capture_event(std::move(event));
+                }
+                apply_inputs();
+                ++g_prediction_ticks;
+            }
+            auto generation = g_scan_generation.load();
+            if (g_scan_ready.load() && generation != last_processed_generation) {
+                CapturedScan scan;
+                { std::lock_guard<std::mutex> lock(g_data_mutex);
+                  scan = {g_latest_scan_time_s, g_scan_history.empty() ? monotonic_time_s() : g_scan_history.back().received, g_latest_scan};
+                  generation = g_scan_generation.load(); }
+                if (!scan.points.empty() && scan.time > 0) {
+                    if (g_autonomous.load() && generation != last_recorded_generation) {
+                        if (last_recorded_generation && generation > last_recorded_generation+1)
+                            g_skipped_scans.fetch_add(generation-last_recorded_generation-1);
+                        LocalisationEvent event; event.type = "scan"; event.scan = scan; capture_event(std::move(event));
+                        last_recorded_generation = generation;
+                    }
+                    loc_update_scan(scan.points.data(), scan.points.size(), MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY, scan.time);
+                    if (loc_get_deskew_status().reason != "waiting_motion") last_processed_generation = generation;
+                } else last_processed_generation = generation;
+            }
+            const auto completed = Clock::now();
+            g_prediction_work_us = std::chrono::duration_cast<std::chrono::microseconds>(completed-started).count();
+            next += period;
+            if (next < completed) {
+                const auto missed = (completed-next)/period + 1;
+                g_prediction_overruns.fetch_add(missed);
+                next += period * missed;
+            }
+            std::unique_lock<std::mutex> lock(g_worker_mutex);
+            g_worker_wake.wait_until(lock, next, [] { return !g_loc_running.load(); });
         }
-
-        std::uint64_t generation = g_scan_generation.load();
-        if (generation == last_processed_generation) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
-        }
-
-        std::vector<ScanPoint> scan_copy;
-        double scan_time_s = 0.0;
-        {
-            std::lock_guard<std::mutex> lock(g_data_mutex);
-            scan_copy = g_latest_scan;
-            scan_time_s = g_latest_scan_time_s;
-            generation = g_scan_generation.load();
-        }
-
-        if (scan_copy.empty() || scan_time_s <= 0.0) {
-            last_processed_generation = generation;
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
-        }
-
-        std::vector<LocScanPoint> loc_scan(scan_copy.size());
-        for (size_t i = 0; i < scan_copy.size(); i++) {
-            loc_scan[i].angle_deg = scan_copy[i].angle_deg;
-            loc_scan[i].distance_mm = scan_copy[i].distance_mm;
-            loc_scan[i].quality = scan_copy[i].quality;
-            loc_scan[i].hit = scan_copy[i].hit;
-            loc_scan[i].time_s = scan_copy[i].time_s;
-        }
-
-        loc_update_scan(loc_scan.data(), (int)loc_scan.size(),
-                        MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY,
-                        scan_time_s);
-        // IMU/wheel samples can arrive slightly later than the scan thread.
-        if (loc_get_deskew_status().reason != "waiting_motion") last_processed_generation = generation;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } catch (const std::exception& exc) {
+        loc_motion_discontinuity();
+        std::lock_guard<std::mutex> lock(g_worker_mutex); g_worker_error = exc.what();
     }
+    if (source) source->release();
 }
 
 static bool init_lidar(const std::string& port, int baudrate) {
@@ -246,15 +323,17 @@ static bool init_lidar(const std::string& port, int baudrate) {
 }
 
 static void shutdown_lidar() {
-    if (g_loc_running.load()) {
-        g_loc_running.store(false);
-        if (g_loc_thread.joinable()) {
-            g_loc_thread.join();
-        }
-        loc_stop();
-    }
+    g_loc_running.store(false);
+    g_worker_wake.notify_all();
+    if (g_loc_thread.joinable()) g_loc_thread.join();
+    loc_stop();
+    g_autonomous.store(false);
+    std::atomic_store(&g_motion_source, std::shared_ptr<hardware::MotionSource>());
 
     if (g_driver == nullptr) {
+        std::lock_guard<std::mutex> lock(g_data_mutex);
+        g_latest_scan.clear(); g_scan_history.clear(); g_scan_ready = false;
+        g_latest_scan_time_s = 0;
         return;
     }
 
@@ -414,24 +493,32 @@ static std::uint64_t get_mcl_update_count() {
     return loc_get_last_scan_correction().sequence;
 }
 
-static void start_coordinates(float pitch_x, float pitch_y, bool use_pcb) {
-    if (g_loc_running.load()) {
-        throw std::runtime_error("Localization already running.");
+static void start_coordinates(float pitch_x, float pitch_y, bool use_pcb,
+                              std::shared_ptr<hardware::MotionSource> source, double prediction_hz) {
+    if (g_loc_running.load() || g_loc_thread.joinable()) throw std::runtime_error("Localization already running.");
+    if (!std::isfinite(prediction_hz) || prediction_hz < 10 || prediction_hz > 200)
+        throw std::invalid_argument("Prediction rate must be 10..200 Hz");
+    if (source) source->claim();
+    try {
+        loc_init_map(pitch_x, pitch_y); loc_start(use_pcb);
+        std::atomic_store(&g_motion_source, source); g_prediction_hz = prediction_hz;
+        { std::lock_guard<std::mutex> lock(g_worker_mutex); g_pending_inputs = {}; g_worker_error.clear(); }
+        g_prediction_ticks = 0; g_prediction_overruns = 0; g_skipped_scans = 0;
+        g_autonomous.store(bool(source)); g_loc_running.store(true);
+        g_loc_thread = std::thread(localization_thread_func);
+    } catch (...) {
+        if (source) source->release();
+        g_loc_running = false; g_autonomous = false; std::atomic_store(&g_motion_source, std::shared_ptr<hardware::MotionSource>()); loc_stop(); throw;
     }
-
-    loc_init_map(pitch_x, pitch_y);
-    loc_start(use_pcb);
-
-    g_loc_running.store(true);
-    g_loc_thread = std::thread(localization_thread_func);
     printf("MCL localization started (pitch %.0f x %.0f mm)\n", pitch_x, pitch_y);
 }
 
 static void set_imu_yaw(float yaw_deg) {
-    loc_set_imu_yaw(yaw_deg);
+    set_yaw_input(yaw_deg);
 }
 
 static void predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s) {
+    if (g_autonomous.load()) throw std::logic_error("Manual prediction is disabled with an autonomous motion source");
     loc_predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
 }
 
@@ -589,6 +676,7 @@ PYBIND11_MODULE(lidar, m) {
     m.def("configure_deskew", &loc_configure_deskew, py::arg("mode"),
           py::arg("forward_mm")=0, py::arg("left_mm")=0, py::arg("yaw_deg")=0);
     m.def("feed_motion", [](py::dict sample) {
+        if (g_autonomous.load()) throw std::logic_error("Manual motion feed is disabled with an autonomous motion source");
         std::vector<motion::Value> yaw,gyro;
         for (const auto& p : sample["yaw"].cast<std::vector<std::pair<double,double>>>())
             yaw.push_back({p.first,p.second});
@@ -613,6 +701,7 @@ PYBIND11_MODULE(lidar, m) {
     m.def("enable_scan_capture", [](bool enabled) {
         std::lock_guard<std::mutex> lock(g_data_mutex);
         g_capture_enabled=enabled; g_capture_scans.clear(); g_capture_dropped=0;
+        g_localisation_events.clear(); g_event_dropped=0;
     });
     m.def("drain_scan_capture", [](bool stop) {
         std::deque<CapturedScan> scans; unsigned long long dropped;
@@ -637,10 +726,10 @@ PYBIND11_MODULE(lidar, m) {
         loc_set_replay_time(time);
     });
     m.def("seed", &loc_seed);
-    m.def("set_line_readings", &loc_set_line_readings,
+    m.def("set_line_readings", &set_line_input,
           py::arg("colours"), py::arg("timestamp_s"),
           "Store 30 classified PCB readings in front-first working-sensor order for optional floor-colour scoring");
-    m.def("clear_line_readings", &loc_clear_line_readings);
+    m.def("clear_line_readings", &clear_line_input);
     m.def("get_line_readings", []() {
         const auto snapshot = loc_get_line_readings();
         py::dict result;
@@ -690,11 +779,16 @@ PYBIND11_MODULE(lidar, m) {
     m.def("get_mcl_update_count", &get_mcl_update_count,
           "Monotonic count of MCL scan updates applied.");
 
-    m.def("start_coordinates", &start_coordinates,
+    m.def("start_coordinates", [](float x, float y, bool pcb, py::object input, double hz) {
+        auto source = input.is_none() ? std::shared_ptr<hardware::MotionSource>() : input.cast<std::shared_ptr<hardware::MotionSource>>();
+        py::gil_scoped_release release;
+        start_coordinates(x, y, pcb, std::move(source), hz);
+    },
           py::arg("pitch_x"), py::arg("pitch_y"), py::arg("use_pcb") = false,
+          py::arg("motion_source") = py::none(), py::arg("prediction_hz") = 100,
           "Start background MCL localization thread.");
 
-    m.def("clear_imu_yaw", &loc_clear_imu_yaw, "Remove the IMU prior without resetting localisation");
+    m.def("clear_imu_yaw", &clear_yaw_input, "Remove the IMU prior without resetting localisation");
     m.def("set_imu_yaw", &set_imu_yaw,
           py::arg("yaw_deg"),
           "Set startup-relative IMU yaw for the soft MCL yaw prior.");
@@ -709,6 +803,44 @@ PYBIND11_MODULE(lidar, m) {
           "Set translation speed-noise coefficient in sqrt(seconds). "
           "Default 0.30; use 0 for the legacy stationary-only noise model.");
 
+    m.def("autonomous_motion_enabled", [] { return g_autonomous.load(); });
+    m.def("get_prediction_count", [] { return loc_get_pose_snapshot().prediction_count; });
+    m.def("get_pose_snapshot", [] {
+        const auto s = loc_get_pose_snapshot(); py::dict d;
+        d["pose"] = py::make_tuple(s.pose.x, s.pose.y, s.pose.yaw_deg, s.pose.confidence);
+        d["ok"] = s.pose.ok; d["timestamp_s"] = s.timestamp_s; d["epoch"] = s.epoch;
+        d["age_s"] = s.timestamp_s > 0 ? monotonic_time_s()-s.timestamp_s : -1;
+        return d;
+    });
+    m.def("get_worker_diagnostics", [] {
+        const auto source = std::atomic_load(&g_motion_source);
+        py::dict d; d["ticks"] = g_prediction_ticks.load(); d["missed_deadlines"] = g_prediction_overruns.load();
+        d["work_ms"] = g_prediction_work_us.load()/1000.0;
+        d["queue_depth"] = source ? source->depth() : 0;
+        d["dropped_motion"] = source ? source->dropped() : 0;
+        d["skipped_scans"] = g_skipped_scans.load();
+        { std::lock_guard<std::mutex> lock(g_worker_mutex); d["error"] = g_worker_error; }
+        return d;
+    });
+    m.def("drain_localisation_events", [](bool stop) {
+        std::deque<LocalisationEvent> events; std::uint64_t dropped;
+        { std::lock_guard<std::mutex> lock(g_data_mutex); events.swap(g_localisation_events); dropped=g_event_dropped; if (stop) g_capture_enabled=false; }
+        py::list result;
+        for (const auto& event : events) {
+            py::dict d; d["type"] = event.type; d["recorded_s"] = event.recorded;
+            if (event.type == "motion") {
+                const auto& s=event.motion; py::dict sample;
+                sample["vx"]=s.vx; sample["vy"]=s.vy; sample["timestamp_s"]=s.timestamp_s; sample["read_span_s"]=s.read_span_s;
+                sample["yaw"]=s.imu.yaw; sample["gyro"]=s.imu.gyro; sample["epoch"]=s.imu.epoch; d["sample"]=sample;
+            } else if (event.type == "scan") {
+                d["time_s"]=event.scan.time; d["received_s"]=event.scan.received; py::list points;
+                for (const auto& p : event.scan.points) points.append(py::make_tuple(p.angle_deg,p.distance_mm,p.quality,p.hit,p.time_s));
+                d["points"]=points;
+            } else { py::dict sample; sample["colours"]=event.floor.colours; sample["timestamp_s"]=event.floor.timestamp_s; sample["valid"]=event.floor.valid; d["sample"]=sample; }
+            result.append(d);
+        }
+        return py::make_tuple(result,dropped);
+    }, py::arg("stop")=false);
     m.def("get_pose", &get_pose_py,
           "Get (x, y, yaw_deg, confidence) from MCL.");
 
@@ -734,6 +866,25 @@ PYBIND11_MODULE(lidar, m) {
           "Get (scan_quality, baseline, bad_scans, global_fraction, valid) "
           "for MCL recovery diagnostics.");
 
+    m.def("test_claim_motion_source", [](std::shared_ptr<hardware::MotionSource> source) { source->claim(); });
+    m.def("test_create_motion_source", [] { return std::make_shared<hardware::MotionSource>(); });
+    m.def("test_publish_motion", [](std::shared_ptr<hardware::MotionSource> source, py::dict input) {
+        hardware::MotionSample sample;
+        sample.vx=input["vx"].cast<double>(); sample.vy=input["vy"].cast<double>();
+        sample.timestamp_s=input["timestamp_s"].cast<double>(); sample.read_span_s=input["read_span_s"].cast<double>();
+        sample.imu.yaw=input["yaw"].cast<std::vector<std::pair<double,double>>>();
+        sample.imu.gyro=input["gyro"].cast<std::vector<std::pair<double,double>>>(); sample.imu.epoch=input["epoch"].cast<std::uint64_t>();
+        source->publish(std::move(sample));
+    });
+    m.def("test_close_motion_source", [](std::shared_ptr<hardware::MotionSource> source) { source->close(); });
+    m.def("test_publish_scan", [](const std::vector<std::array<double,5>>& points, double stamp) {
+        std::vector<ScanPoint> scan;
+        for (const auto& p : points) scan.push_back({float(p[0]),float(p[1]),int(p[2]),bool(p[3]),p[4]});
+        std::lock_guard<std::mutex> lock(g_data_mutex);
+        g_latest_scan=std::move(scan); g_latest_scan_time_s=stamp;
+        g_scan_ready=true; ++g_scan_generation;
+    });
+    m.def("test_delay_next_scan", &loc_test_scan_delay);
     m.def("test_mcl_start", &test_mcl_start,
           py::arg("pitch_x"), py::arg("pitch_y"), py::arg("use_pcb") = false,
           "Start MCL without LIDAR hardware (for synthetic tests).");

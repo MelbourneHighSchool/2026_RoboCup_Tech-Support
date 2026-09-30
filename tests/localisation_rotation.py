@@ -48,7 +48,8 @@ def main():
         )
         startup = capture_startup_yaw(hardware)
         feed_imu_yaw_prior(lidar, hardware, startup)
-        lidar.start_coordinates(2430, 1820, use_pcb=False)
+        lidar.start_coordinates(2430, 1820, use_pcb=False,
+                                motion_source=hardware.motion_source, prediction_hz=100)
         session = LocalisationSession(lidar, hardware, startup, LidarVelocityEstimator(), use_pcb=False)
         deadline = time.monotonic() + 30
         print("Waiting for initial localisation (30 second timeout)...")

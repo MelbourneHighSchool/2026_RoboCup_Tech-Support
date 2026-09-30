@@ -71,11 +71,11 @@ def main():
         if yaw_relative is not None:
             lidar.set_imu_yaw(yaw_relative)
 
-        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT, use_pcb=USE_PCB)
+        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT, use_pcb=USE_PCB,
+                                motion_source=hardware.motion_source, prediction_hz=100)
         line_sensor_feed = LineSensorFeed(use_pcb=USE_PCB)
 
         print("Waiting for first coordinate estimate...")
-        last_pose_time = time.monotonic()
         while not lidar.is_coordinates_ready():
             if _enter_pressed():
                 print("Shutdown requested, exiting.")
@@ -83,10 +83,6 @@ def main():
             yaw_relative = hardware.get_yaw()
             if yaw_relative is not None:
                 lidar.set_imu_yaw(yaw_relative)
-            now = time.monotonic()
-            vx, vy = hardware.get_measured_body_velocity_mm_s(yaw_relative or 0.0)
-            lidar.predict_odometry(vx, vy, hardware.get_gyro_z_deg_s() or 0.0, now - last_pose_time)
-            last_pose_time = now
             line_sensor_feed.update(lidar, hardware)
             time.sleep(0.1)
 
@@ -110,11 +106,6 @@ def main():
                 continue
 
             lidar.set_imu_yaw(yaw_relative)
-            gyro_z = hardware.get_gyro_z_deg_s()
-            now = time.monotonic()
-            vx, vy = hardware.get_measured_body_velocity_mm_s(yaw_relative)
-            lidar.predict_odometry(vx, vy, gyro_z or 0.0, now - last_pose_time)
-            last_pose_time = now
             line_sensor_feed.update(lidar, hardware)
 
             x_pos, y_pos, mcl_yaw, _confidence = lidar.get_pose()

@@ -41,6 +41,7 @@ def _make_camera_for_infer(camera_module):
     camera._latest_seq = 42
     camera._latest_buf = np.zeros((8, 8, 3), dtype=np.uint8)
     camera._latest_sensor_timestamp_ns = 1_500_000_000
+    camera._latest_exposure_monotonic = None
     camera._first_sensor_timestamp_ns = 1_000_000_000
     camera._video_start_elapsed_s = 2.0
     camera.session_epoch_monotonic = 10.0

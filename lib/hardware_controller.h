@@ -4,6 +4,7 @@
 #include "imu/linux_bno08x.h"
 #include "linux_kicker.h"
 #include "pcb.h"
+#include "motion_source.h"
 #include "status_display.h"
 #include <array>
 #include <atomic>
@@ -86,10 +87,8 @@ public:
     HardwareHealth health() const;
     PcbSnapshot get_pcb_snapshot() const;
     std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);
-    struct LocalisationSample {
-        double vx, vy, timestamp_s, read_span_s;
-        LinuxBno08x::History imu;
-    };
+    using LocalisationSample = MotionSample;
+    std::shared_ptr<MotionSource> motion_source() const { return motion_source_; }
     LocalisationSample get_localisation_sample();
     double get_dribbler_rpm();
     void stop();
@@ -100,6 +99,8 @@ public:
     double current_direction() const;
 private:
     void drive_loop() noexcept;
+    LocalisationSample read_odometry_locked(); // Caller owns the bus mutex.
+    std::shared_ptr<MotionSource> motion_source_ = std::make_shared<MotionSource>();
     void imu_loop() noexcept;
     void kicker_loop() noexcept;
     void pcb_loop() noexcept;

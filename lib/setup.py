@@ -29,7 +29,7 @@ sdk_lib = str(project_root / "rplidar_sdk/output/Linux/Release")
 # Define the extension module
 lidar_module = Extension(
     'lib.lidar',
-    depends=[pcb_layout_header],
+    depends=[pcb_layout_header, str(lib_dir / "motion_source.h")],
     sources=[
         str(lib_dir / 'lidar_module.cpp'),
         str(lib_dir / 'localisation.cpp'),
@@ -49,7 +49,7 @@ lidar_module = Extension(
 
 hardware_module = Extension(
     'lib.hardware_controller',
-    depends=[pcb_layout_header],
+    depends=[pcb_layout_header, str(lib_dir / "motion_source.h")],
     sources=[str(lib_dir / name) for name in (
         'hardware_module.cpp', 'hardware_controller.cpp',
         'PowerfulBLDCdriver.cpp', 'linux_wire.cpp',

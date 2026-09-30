@@ -66,6 +66,8 @@ class GameStatus:
         self._trackers = {}
         self._errors = {}
         self._lock = threading.RLock()
+        self._state_lock = threading.Lock()
+        self._poll_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
 
@@ -74,7 +76,7 @@ class GameStatus:
         self._thread.start()
 
     def update(self, mode, run, stage=GameState.AUTO, detail=""):
-        with self._lock:
+        with self._state_lock:
             self.mode = BotMode[mode] if isinstance(mode, str) else BotMode(mode)
             self.run, self.stage, self.detail = run, GameState(stage), detail
 
@@ -93,15 +95,14 @@ class GameStatus:
     def report(self, source, error):
         message = str(error)
         with self._lock:
-            if self._errors.get(source) != message:
-                if message:
-                    print(f"{source}: {message}", flush=True)
-                elif source in self._errors:
-                    print(f"{source}: recovered", flush=True)
+            previous = self._errors.get(source)
+            changed = previous != message
+            self._errors[source] = message
+        if changed:
             if message:
-                self._errors[source] = message
-            else:
-                self._errors.pop(source, None)
+                print(f"{source}: {message}", flush=True)
+            elif previous:
+                print(f"{source}: recovered", flush=True)
             if self.display is not None:
                 self.display.component(source, HealthState.FAILED if message else HealthState.READY, message)
 
@@ -110,7 +111,9 @@ class GameStatus:
         return tracker.update(count, now)
 
     def poll(self):
-        with self._lock:
+        with self._poll_lock:
+            with self._state_lock:
+                mode, run, stage, detail = self.mode, self.run, self.stage, self.detail
             now = self.clock()
             lidar_health = self._progress("lidar", self.lidar.get_scan_generation(), now)
             fallback = "ODOM"
@@ -143,6 +146,10 @@ class GameStatus:
                                        ("DETECTION LOG", self.recording.detection_writer)):
                     if writer.error is not None:
                         self.report(source, writer.error)
+            if self.recording is not None:
+                self.report("METADATA", getattr(self.recording, "checkpoint_error", None) or "")
+            if hasattr(self.lidar, "get_worker_diagnostics"):
+                self.report("LOCALISATION", self.lidar.get_worker_diagnostics()["error"])
             blocked = False
             if self.hardware is not None:
                 health = self.hardware.health()
@@ -153,10 +160,10 @@ class GameStatus:
                 if health["error"]:
                     self.report(health["fault_source"] or "OTHER", health["error"])
                     blocked = True
-            state = self.stage or (GameState.BLOCKED if self.run and blocked else (
-                GameState.RUNNING if self.run else GameState.PAUSED))
+            state = stage or (GameState.BLOCKED if run and blocked else (
+                GameState.RUNNING if run else GameState.PAUSED))
             if self.display is not None:
-                self.display.update(self.mode.name, self.run, state, self.detail)
+                self.display.update(mode.name, run, state, detail)
             return self.camera_ready
 
     def _worker(self):

@@ -184,6 +184,9 @@ def predict_odometry(
         vx = scale * vx_wheel
         vy = scale * vy_wheel
 
+    autonomous = getattr(lidar_module, "autonomous_motion_enabled", lambda: False)()
+    if autonomous and apply_trust:
+        raise ValueError("Scaled odometry requires manual localisation mode")
     if timed_sample is not None:
         timed_sample = {**timed_sample, "vx": vx, "vy": vy}
         feed_timed_motion(lidar_module, movement_controller, sample=timed_sample)

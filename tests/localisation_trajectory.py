@@ -278,7 +278,8 @@ def main(argv=None):
         startup = capture_startup_yaw(hardware)
         feed_imu_yaw_prior(lidar, hardware, startup)
         lidar.set_motion_noise(args.motion_noise)
-        lidar.start_coordinates(PITCH_X_MM, PITCH_Y_MM, use_pcb=False)
+        lidar.start_coordinates(PITCH_X_MM, PITCH_Y_MM, use_pcb=False,
+                                motion_source=hardware.motion_source, prediction_hz=100)
         session = LocalisationSession(
             lidar,
             hardware,

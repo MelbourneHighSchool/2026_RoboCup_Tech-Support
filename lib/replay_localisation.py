@@ -49,7 +49,7 @@ def replay(path, output, mode, *, plot_every=50):
     last_pose = None
     processed = 0
     capture_complete = False
-    dropped_scans = dropped_events = 0
+    dropped_scans = dropped_events = dropped_motion = 0
     writer_error = None
     clock = 0.0
     fields = ["scan_time_s", "x", "y", "yaw", "confidence", "valid", "pose_jump_mm",
@@ -113,6 +113,7 @@ def replay(path, output, mode, *, plot_every=50):
                 elif kind in ("health", "footer"):
                     dropped_scans = max(dropped_scans, event.get("dropped_scans", 0))
                     dropped_events = max(dropped_events, event.get("dropped_events", 0))
+                    dropped_motion = max(dropped_motion, event.get("dropped_motion", 0))
                     writer_error = event.get("writer_error") or writer_error
                     capture_complete |= kind == "footer"
                 process_pending()
@@ -127,7 +128,7 @@ def replay(path, output, mode, *, plot_every=50):
             "mean_wall_residual_mm": sum(residuals)/len(residuals) if residuals else None,
             "p95_wall_residual_mm": residuals[math.ceil(0.95*len(residuals))-1] if residuals else None,
             "capture_complete": capture_complete, "dropped_scans": dropped_scans,
-            "dropped_events": dropped_events, "writer_error": writer_error,
+            "dropped_events": dropped_events, "dropped_motion": dropped_motion, "writer_error": writer_error,
             "note": "Residuals use estimated pose, not independent ground truth. Pose jumps include actual motion."}
 
 
@@ -147,7 +148,7 @@ def main():
     for result in summaries:
         print(f"{result['mode']}: scans={result['scans']}, reasons={result['reasons']}, "
               f"mean residual={result['mean_wall_residual_mm']} mm")
-        if not result["capture_complete"] or result["dropped_scans"] or result["dropped_events"] or result["writer_error"]:
+        if not result["capture_complete"] or result["dropped_scans"] or result["dropped_events"] or result["dropped_motion"] or result["writer_error"]:
             print("  Capture incomplete or contains drops/errors; inspect summary.json before comparing.")
 
 

@@ -45,6 +45,16 @@ struct LocPose {
     bool ok;
 };
 
+struct LocPoseSnapshot {
+    LocPose pose = {0, 0, 0, 0, false};
+    double timestamp_s = 0;
+    std::uint64_t epoch = 0, prediction_count = 0;
+    bool ready = false;
+};
+LocPoseSnapshot loc_get_pose_snapshot();
+void loc_motion_discontinuity();
+void loc_test_scan_delay(unsigned milliseconds);
+
 // Full-resolution endpoints at reference time, local x forward / y right.
 struct LocFusionContext {
     std::string reason = "missing_motion";

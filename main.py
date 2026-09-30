@@ -29,10 +29,9 @@ from lib.localisation_motion import (
     MotionCapture,
     close_motion_capture,
     configure_motion,
-    feed_timed_motion,
     record_diagnostic_event,
-    record_floor,
 )
+from lib.loop_timing import FpsMonitor, RateLimiter
 from lib.pcb_brightness import restore_brightness
 from lib.recording_session import RecordingSession
 from state import FusionMode, GameState, StartupStage
@@ -40,6 +39,8 @@ from state import FusionMode, GameState, StartupStage
 USE_PCB = True
 
 LOG_FPS = 30 # How often the bot state is written to the log file
+LOGIC_HZ = 150
+MAX_POSE_AGE_S = 0.1
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
 ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
@@ -165,35 +166,6 @@ if args.record_session is not None and args.camera_stream:
     parser.error("--record-session cannot be combined with --camera-stream")
 
 
-# Used to debug speeds of various parts of the code.
-class FpsMonitor:
-    """Sample monotonic counters and print Hz once per reporting interval."""
-
-    def __init__(self, interval_s=FPS_REPORT_INTERVAL):
-        self._interval_s = interval_s
-        self._sources: list[tuple[str, object]] = []
-        self._last_counts: dict[str, int] = {}
-        self._last_t = time.monotonic()
-
-    def add(self, name: str, getter) -> None:
-        self._sources.append((name, getter))
-        self._last_counts[name] = int(getter())
-
-    def maybe_print(self) -> None:
-        now = time.monotonic()
-        elapsed = now - self._last_t
-        if elapsed < self._interval_s:
-            return
-        parts = []
-        for name, getter in self._sources:
-            count = int(getter())
-            rate = (count - self._last_counts[name]) / elapsed
-            self._last_counts[name] = count
-            parts.append(f"{name}={rate:.1f}")
-        self._last_t = now
-        print("FPS " + " ".join(parts), flush=True)
-
-
 if args.stream:
     from lib import send_log
     # Start websocket log server in the background (it runs its own asyncio loop).
@@ -209,6 +181,9 @@ _log_write_count = 0
 _log_error = None
 _log_write_count_lock = threading.Lock()
 _logic_loop_count = 0
+_strategy_loop_count = 0
+fps_monitor = None
+logic_timing = RateLimiter(LOGIC_HZ)
 
 
 def update_latest_log_snapshot(log_line: str) -> None:
@@ -420,7 +395,8 @@ try:
     print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
     feed_imu_yaw_prior(hardware_controller)
 
-    lidar.start_coordinates(2430, 1820, use_pcb=USE_PCB)
+    lidar.start_coordinates(2430, 1820, use_pcb=USE_PCB,
+                            motion_source=hardware_controller.motion_source, prediction_hz=100)
     configure_motion(lidar, use_pcb=USE_PCB)
     line_sensor_feed = LineSensorFeed(use_pcb=USE_PCB)
     if line_sensor_feed.error:
@@ -434,9 +410,7 @@ try:
             print("Shutdown requested, exiting.")
             raise KeyboardInterrupt
         feed_imu_yaw_prior(hardware_controller)
-        feed_timed_motion(lidar, hardware_controller)
         line_sensor_feed.update(lidar, hardware_controller)
-        record_floor(lidar)
         time.sleep(0.1)
 
     if args.record_session is not None:
@@ -507,6 +481,9 @@ try:
     if args.fps:
         fps_monitor = FpsMonitor()
         fps_monitor.add("logic", lambda: _logic_loop_count)
+        fps_monitor.add("strategy", lambda: _strategy_loop_count)
+        fps_monitor.add("qdr", lambda: hardware_controller.motion_source.count)
+        fps_monitor.add("mcl_predict", lidar.get_prediction_count)
         fps_monitor.add("camera_cap", lambda: camera.capture_count)
         fps_monitor.add("camera_infer", lambda: camera.infer_count)
         fps_monitor.add("drive", lambda: hardware_controller.loop_count)
@@ -514,7 +491,7 @@ try:
         if hasattr(lidar, "get_scan_generation"):
             fps_monitor.add("lidar_scan", lidar.get_scan_generation)
         if hasattr(lidar, "get_mcl_update_count"):
-            fps_monitor.add("lidar_mcl", lidar.get_mcl_update_count)
+            fps_monitor.add("mcl_scan", lidar.get_mcl_update_count)
         if peer is not None:
             fps_monitor.add("peer_rx", lambda: peer.receive_count)
         if log_recorder_thread is not None:
@@ -525,6 +502,15 @@ try:
                 "session_detection",
                 lambda: recording_session.detection_writer.written,
             )
+        fps_monitor.add_diagnostics(logic_timing.diagnostics)
+        fps_monitor.add_diagnostics(lidar.get_worker_diagnostics)
+        fps_monitor.add_diagnostics(lambda: {
+            "drive_missed": hardware_controller.timing_diagnostics().get("motor_overruns", 0),
+            "drive_max_wait_ms": round(hardware_controller.timing_diagnostics().get("motor_max_wait_s", 0) * 1000, 2),
+            "drive_max_work_ms": round(hardware_controller.timing_diagnostics().get("motor_max_work_s", 0) * 1000, 2),
+            "scan_ms": round(lidar.get_deskew_status()["processing_ms"], 2),
+        })
+        fps_monitor.start()
         print("FPS monitoring enabled")
 
     paused_yaw_sampler = RollingYawSampler()
@@ -539,15 +525,15 @@ try:
     imu_pause = ImuPause(hardware_controller.health()["imu_recovery_generation"])
     last_yaw_correction_time = time.monotonic()
     while True:
+        logic_timing.wait()
+        _logic_loop_count += 1
         if enter_pressed():
             break
         if recording_session is not None:
             checkpoint_time = time.monotonic()
             if checkpoint_time >= next_recording_checkpoint_time:
-                recording_session.checkpoint(camera.recording_info)
+                recording_session.request_checkpoint(camera.recording_info)
                 next_recording_checkpoint_time = checkpoint_time + 1.0
-        if fps_monitor is not None:
-            fps_monitor.maybe_print()
         was_run = run
         was_requested_run = requested_run
         pause_pressed = pause_switch.read() if USE_PAUSE else False
@@ -597,18 +583,16 @@ try:
         last_yaw_correction_time = correction_time
         yaw = hardware_controller.get_yaw()
         feed_imu_yaw_prior(hardware_controller)
-        feed_timed_motion(lidar, hardware_controller)
         line_sensor_feed.update(lidar, hardware_controller)
-        record_floor(lidar)
 
         if run:
-            _logic_loop_count += 1
-
-            x_pos, y_pos, mcl_yaw, confidence = lidar.get_pose()
-            if x_pos is None or y_pos is None or yaw is None:
+            pose_snapshot = lidar.get_pose_snapshot()
+            logic_timing.observe_pose_age(pose_snapshot["age_s"])
+            x_pos, y_pos, mcl_yaw, confidence = pose_snapshot["pose"]
+            if (not pose_snapshot["ok"] or not 0 <= pose_snapshot["age_s"] <= MAX_POSE_AGE_S
+                    or yaw is None):
                 hardware_controller.move(0, 0, 0, 0, 0)
                 status.update(bot_mode.name, run, GameState.BLOCKED, "WAITING FOR POSE")
-                time.sleep(0.01)
                 continue
 
             if confidence > IMU_CORRECTION_CONFIDENCE_THRESHOLD:
@@ -833,8 +817,8 @@ try:
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
+            _strategy_loop_count += 1
         else:
-            time.sleep(0.01)
             if hardware_controller is not None:
                 hardware_controller.move(0, 0, 0, 0, 0)
 
@@ -852,6 +836,8 @@ except Exception as exc:
             print(f"Warning: failed to publish final status: {status_error}")
     raise
 finally:
+    if fps_monitor is not None:
+        fps_monitor.stop()
     if status is not None:
         status.stop()
     if log_recorder_thread is not None:
@@ -880,9 +866,7 @@ finally:
                 status.report("CAMERA", exc)
     if recording_session is not None:
         try:
-            if camera is not None:
-                recording_session.update_metadata(camera.recording_info)
-            recording_session.close()
+            recording_session.close(camera.recording_info if camera is not None else None)
             dropped_game = recording_session.game_writer.dropped
             dropped_detection = recording_session.detection_writer.dropped
             print(

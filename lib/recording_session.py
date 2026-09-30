@@ -184,6 +184,36 @@ class RecordingSession:
             DETECTION_FIELDS,
             queue_size=8192,
         )
+        self.checkpoint_error = None
+        self._checkpoint_lock = threading.Lock()
+        self._checkpoint_pending = None
+        self._checkpoint_wake = threading.Event()
+        self._checkpoint_stop = threading.Event()
+        self._checkpoint_thread = threading.Thread(
+            target=self._checkpoint_worker, name="metadata-writer", daemon=True,
+        )
+        self._checkpoint_thread.start()
+
+    def request_checkpoint(self, values=None):
+        """Coalesce live metadata requests without waiting for disk or metadata locks."""
+        if self._checkpoint_stop.is_set():
+            return
+        with self._checkpoint_lock:
+            self._checkpoint_pending = {**(self._checkpoint_pending or {}), **dict(values or {})}
+        self._checkpoint_wake.set()
+
+    def _checkpoint_worker(self):
+        try:
+            while not self._checkpoint_stop.is_set():
+                self._checkpoint_wake.wait()
+                self._checkpoint_wake.clear()
+                with self._checkpoint_lock:
+                    values = self._checkpoint_pending
+                    self._checkpoint_pending = None
+                if values is not None:
+                    self.checkpoint(values)
+        except Exception as exc:
+            self.checkpoint_error = str(exc)
 
     def elapsed(self) -> float:
         return time.monotonic() - self.epoch_monotonic
@@ -257,10 +287,20 @@ class RecordingSession:
         finally:
             os.close(directory_fd)
 
-    def close(self) -> None:
+    def close(self, final_metadata: Mapping[str, object] | None = None) -> None:
+        self._checkpoint_stop.set()
+        self._checkpoint_wake.set()
+        self._checkpoint_thread.join()
+        with self._checkpoint_lock:
+            pending = self._checkpoint_pending
+            self._checkpoint_pending = None
         self.game_writer.close()
         self.detection_writer.close()
         with self._metadata_lock:
+            if pending:
+                self._metadata.update(pending)
+            if final_metadata:
+                self._metadata.update(final_metadata)
             self._metadata.update(
                 {
                     "duration_s": self.elapsed(),
@@ -276,6 +316,7 @@ class RecordingSession:
                         if self.detection_writer.error
                         else None
                     ),
+                    "checkpoint_error": self.checkpoint_error,
                     "finalized": True,
                 }
             )
