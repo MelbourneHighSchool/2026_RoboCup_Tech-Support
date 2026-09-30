@@ -367,7 +367,7 @@ static float score_pose(float x, float y, float yaw_deg,
         PredictedHit pred = predict_hit(ox, oy, ux, uy, Lx, Ly);
 
         // Measure the absolute cosine of the predicted hit
-        // Large values of abs_cos indicate an 'extreme angle' where a lidar return is not expected
+        // Small values of abs_cos indicate an 'extreme angle' where a lidar return is not expected
         float abs_cos = 0.0f;
         if (pred.range_mm < 1e29f) {
             abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
@@ -396,19 +396,21 @@ static float score_pose(float x, float y, float yaw_deg,
 }
 
 struct PoseStats {
-    float inlier_ratio;
-    float mad_mm;
-    float normal_x_energy;
-    float normal_y_energy;
-    int hit_count;
+    int hit_count; // Number of observations with actual lidar returns.
+    float inlier_ratio; // Fraction of actual hits whose range error is below INLIER_THRESH.
+    float mad_mm; // Scaled median absolute range error among inliers, in mm; lower means tighter matches.
+    // Normal energies describe whether matching, visible hits cover both wall orientations.
+    float normal_x_energy; // Normalized evidence from surfaces with normals along the field X axis.
+    float normal_y_energy; // Normalized evidence from surfaces with normals along the field Y axis.
 };
 
+// Calculates PoseStats for a given pose based on the lidar scan
 static PoseStats compute_stats(float x, float y, float yaw_deg,
                                const Observation* obs, int n,
                                float Lx, float Ly) {
-    float psi = yaw_deg * (float)(M_PI / 180.0);
-    const float cp=std::cos(psi), sp=std::sin(psi);
-    std::vector<float> inlier_errors;
+    float psi = yaw_deg * (float)(M_PI / 180.0); // Yaw in radians
+    const float cp=std::cos(psi), sp=std::sin(psi); // Store cos(psi) and sin(psi)
+    std::vector<float> inlier_errors; // Absolute range errors for hits classified as inliers.
     inlier_errors.reserve(n);
     int inlier_count = 0;
     int hit_count = 0;
@@ -416,26 +418,32 @@ static PoseStats compute_stats(float x, float y, float yaw_deg,
     float normal_y_energy = 0.0f;
     float weight_sum = 0.0f;
 
+    // Iterate over every passed in ray
     for (int i = 0; i < n; i++) {
+        // Ignore rays that didn't return
         if (!obs[i].hit) {
             continue;
         }
         hit_count++;
+        // Rotate the ray angle by the pose yaw.
         float theta = psi + obs[i].angle_deg * (float)(M_PI / 180.0);
+        // Get the ray unit vector.
         float ux = std::cos(theta);
         float uy = std::sin(theta);
+        // Get the ray origin, accounting for sensor mounting and movement during the scan.
         const float ox = x + cp*obs[i].origin_x - sp*obs[i].origin_y;
         const float oy = y + sp*obs[i].origin_x + cp*obs[i].origin_y;
+        // Get the predicted hit.
         PredictedHit pred = predict_hit(ox, oy, ux, uy, Lx, Ly);
-        float e = std::fabs(obs[i].distance_mm - pred.range_mm);
+        float e = std::fabs(obs[i].distance_mm - pred.range_mm); // Absolute error
         float abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
         float visibility = wall_visibility(abs_cos, pred.range_mm);
         float w = obs[i].weight * visibility;
         weight_sum += w;
+        // Outliers are excluded from inlier-error and normal-energy statistics.
         if (e < INLIER_THRESH) {
             inlier_count++;
             inlier_errors.push_back(e);
-            // Accumulate visible geometry axes (inlier + non-grazing only).
             normal_x_energy += w * std::fabs(pred.nx);
             normal_y_energy += w * std::fabs(pred.ny);
         }
@@ -448,7 +456,7 @@ static PoseStats compute_stats(float x, float y, float yaw_deg,
     stats.normal_y_energy = normal_y_energy;
 
     if (inlier_errors.empty()) {
-        stats.mad_mm = 1e9f;
+        stats.mad_mm = 1e9f; // Without inliers, make the MAD contribution to confidence negligible.
     } else {
         std::sort(inlier_errors.begin(), inlier_errors.end());
         stats.mad_mm = 1.4826f * inlier_errors[inlier_errors.size() / 2];
@@ -467,6 +475,7 @@ struct ParticleSpread {
     float std_yaw_deg;
 };
 
+// Calculates how concentrated the particles are. Localisation is initalised with low particle spread, but it will generally concentrate after every resample.
 static ParticleSpread compute_particle_spread(const std::vector<Particle>& particles) {
     float sum_w = 0.0f;
     float mean_x = 0.0f;
@@ -511,38 +520,48 @@ static ParticleSpread compute_particle_spread(const std::vector<Particle>& parti
     return spread;
 }
 
+// Calculates the confidence of a pose given its stats and its spread
 static float compute_confidence(const PoseStats& s, const ParticleSpread& spread) {
+    // Closer match to prediction => Higher confidence
     float inlier_conf = 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
 
-    // One visible wall constrains only the normal axis; require diversity.
+    // Low evidence from one direction => Lower confidence
     float axis_x = clamp01(s.normal_x_energy * 2.0f);
     float axis_y = clamp01(s.normal_y_energy * 2.0f);
     float geometry_conf = std::sqrt(std::max(axis_x * axis_y, 0.0f));
-    // Partial scans still get some credit if one strong axis + tight yaw.
+    // Partial scans still get some credit if it has one strong axis.
     geometry_conf = std::max(geometry_conf, 0.35f * std::max(axis_x, axis_y));
 
+    // Lower spreads (higher concentration) => higher confidence
     float spread_conf =
         std::exp(-spread.std_x / SPREAD_X_SCALE_MM)
         * std::exp(-spread.std_y / SPREAD_Y_SCALE_MM)
         * std::exp(-spread.std_yaw_deg / SPREAD_YAW_SCALE_DEG);
 
+    // Weight each factor and combine into one score
     float conf = 0.45f * inlier_conf + 0.35f * geometry_conf + 0.20f * spread_conf;
+    // If there are a low amount of successful hits, confidence gets halved
     if (s.hit_count < MIN_HIT_COUNT) {
         conf *= 0.5f;
     }
     return clamp01(conf);
 }
 
-// Sample init/recovery yaw: IMU-centered when available, else full circle.
+// Generates random yaw values during initialisation.
 static float rand_init_yaw_deg() {
+    // Normally, IMU yaw will be passed in so it will use a normal distribution centred around the IMU yaw.
     if (g_imu_yaw_valid) {
         return wrap_angle_deg(g_imu_yaw_deg + rand_normal(YAW_INIT_SIGMA_DEG));
     }
+    // Otherwise, just use a full circle uniform distribution
     return rand_uniform(-180.0f, 180.0f);
 }
 
+// Generates a random position on the field.
 static void sample_position(Particle& particle, float goal_fraction) {
     float region = rand_uniform(0.0f, 1.0f);
+    // To improve precise localisation inside a goal, extra particles will be randomly sampled inside a goal.
+    // They are split between the two goals equally
     if (region < goal_fraction * 0.5f) {
         particle.x = rand_uniform(GOAL_LEFT_BACK_X, GOAL_LEFT_FRONT_X);
         particle.y = rand_uniform(GOAL_TOP_Y, GOAL_BOTTOM_Y);
@@ -550,14 +569,16 @@ static void sample_position(Particle& particle, float goal_fraction) {
         particle.x = rand_uniform(GOAL_RIGHT_FRONT_X, GOAL_RIGHT_BACK_X);
         particle.y = rand_uniform(GOAL_TOP_Y, GOAL_BOTTOM_Y);
     } else {
+        // All other particles can appear anywhere on the field.
         particle.x = rand_uniform(0.0f, g_pitch_x);
         particle.y = rand_uniform(0.0f, g_pitch_y);
     }
 }
 
+// Uses the two previous functions to initialise particles with a position and yaw randomly.
 static void init_particles_uniform() {
     g_particles.resize(PARTICLE_COUNT);
-    const float weight = 1.0f / PARTICLE_COUNT;
+    const float weight = 1.0f / PARTICLE_COUNT; // All particles start with an equal weight.
     for (auto& particle : g_particles) {
         sample_position(particle, GOAL_PARTICLE_FRACTION);
         particle.yaw_deg = rand_init_yaw_deg();
@@ -565,6 +586,7 @@ static void init_particles_uniform() {
     }
 }
 
+// Outside of initalisation, some amount of random particles are 'injected' to help escape from incorrect poses with a high concentration of particles
 static void inject_random_particles(float fraction) {
     int count = std::max(1, (int)std::round(fraction * PARTICLE_COUNT));
     const float weight = 1.0f / PARTICLE_COUNT;
@@ -586,8 +608,7 @@ static void inject_random_particles(float fraction) {
             sample_position(g_particles[idx], GOAL_PARTICLE_FRACTION);
         }
         g_particles[idx].yaw_deg = rand_init_yaw_deg();
-        // This is a new hypothesis: never inherit the replaced particle's
-        // accumulated evidence. The scan update normalizes it with survivors.
+        // Since this is a new particle, it gets a new weight
         g_particles[idx].weight = weight;
     }
 }

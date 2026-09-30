@@ -1,5 +1,5 @@
 # Localisation
-In order to find its position in the field, the bot uses a custom Monte Carlo Localisation (MCL) algorithm.
+In order to find its position in the field, the bot uses a custom Monte Carlo Localisation (MCL) algorithm. Most of the logic described in this file is implemented in [localisation.cpp](./localisation.cpp). See that file for more in depth annotations.
 
 ## Particle Filter
 Core to this algorithm is a particle filter. This is a model where initially 'particles' are placed randomly around the field. Each of these particles represents a 'pose'. A pose is a combination of position and yaw (rotation). Then, every time a new lidar scan arrives, each particle is scored with how well it matches the lidar scan. In order to calculate this, for each particle it is calculated, 'If the bot was really here, what would the lidar think the distance is for this angle?' Then, that predicted distance is compared with the actual measured distance. Close matches increase the likelihood of that particles, while matches that are further away decrease the likelihood. Then, less likely particles are given lower weights as opposed to more likely particles, which are given higher weights. To get the robot's pose from this particle filter, a weighted average is taken of all the particles.
