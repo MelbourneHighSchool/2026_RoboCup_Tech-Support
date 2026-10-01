@@ -388,6 +388,25 @@ def striker(
         friendly_bot_positions = []
     if enemy_bot_positions is None:
         enemy_bot_positions = []
+    # Recover directly to the nearest legal centre position if fully outside.
+    fully_outside = (
+        x_pos + ROBOT_RADIUS < WHITE_MIN_X
+        or x_pos - ROBOT_RADIUS > WHITE_MAX_X
+        or y_pos + ROBOT_RADIUS < WHITE_MIN_Y
+        or y_pos - ROBOT_RADIUS > WHITE_MAX_Y
+    )
+    if fully_outside:
+        state.reset()
+        target_x = min(
+            max(x_pos, WHITE_MIN_X + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN),
+            WHITE_MAX_X - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN,
+        )
+        target_y = min(
+            max(y_pos, WHITE_MIN_Y + ROBOT_RADIUS + BOUNDARY_STOP_MARGIN),
+            WHITE_MAX_Y - ROBOT_RADIUS - BOUNDARY_STOP_MARGIN,
+        )
+        direction = _angle_to(x_pos, y_pos, target_x, target_y)
+        return direction, 500, 0, state, False, 1
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
         target_x = 960
