@@ -71,7 +71,8 @@ public:
                        double dribbler_motor_current_limit = 1.0,
                        double kick_pulse_length = 0.02, double kick_cooldown = 0.5,
                        std::shared_ptr<StatusDisplay> display = nullptr, bool use_pcb = false,
-                       double motor_hz = 50, double pcb_hz = 50, double imu_poll_hz = 500);
+                       double motor_hz = 50, double pcb_hz = 50, double imu_poll_hz = 500,
+                       bool dribbler_speed_mode = false, double dribbler_speed_rpm = 1000);
     ~HardwareController();
     HardwareController(const HardwareController&) = delete;
     HardwareController& operator=(const HardwareController&) = delete;
@@ -124,6 +125,8 @@ private:
     PcbSnapshot pcb_snapshot_; // state_mutex_; getters return an owned copy
     std::vector<PowerfulBLDCdriver> motors_;
     int32_t drive_motor_current_limit_, dribbler_motor_current_limit_;
+    bool dribbler_speed_mode_;
+    int32_t dribbler_speed_;
     int32_t constant_speed_current_limit_, acceleration_current_limit_; // state_mutex_
     std::chrono::steady_clock::duration kick_pulse_, kick_cooldown_;
     mutable std::mutex state_mutex_;

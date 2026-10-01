@@ -27,7 +27,8 @@ std::unique_ptr<HardwareController> from_addresses(
     int kicker_pin, const std::string& kicker_gpiochip, double drive_motor_current_limit,
     double dribbler_motor_current_limit, double kick_pulse_length, double kick_cooldown,
     std::shared_ptr<hardware::StatusDisplay> display, bool use_pcb,
-    double motor_hz, double pcb_hz, double imu_poll_hz) {
+    double motor_hz, double pcb_hz, double imu_poll_hz,
+    bool dribbler_speed_mode, double dribbler_speed_rpm) {
     // File parsing runs once with the GIL. All motor I/O and control are native C++.
     std::filesystem::path path(calibration_file);
     if (path.is_relative()) {
@@ -65,7 +66,9 @@ std::unique_ptr<HardwareController> from_addresses(
     return std::make_unique<HardwareController>(calibration,
         hardware::DriveConfig{diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold}, i2c_device,
         nullptr, imu_address, imu_report_interval_ms, kicker_pin, kicker_gpiochip, nullptr,
-        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown, std::move(display), use_pcb, motor_hz, pcb_hz, imu_poll_hz);
+        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown,
+        std::move(display), use_pcb, motor_hz, pcb_hz, imu_poll_hz,
+        dribbler_speed_mode, dribbler_speed_rpm);
 }
 }
 PYBIND11_MODULE(hardware_controller, module) {
@@ -104,7 +107,8 @@ PYBIND11_MODULE(hardware_controller, module) {
             py::arg("dribbler_motor_current_limit") = 1.0,
             py::arg("kick_pulse_length") = 0.02, py::arg("kick_cooldown") = 0.5,
             py::arg("display") = nullptr, py::arg("use_pcb") = false,
-            py::arg("motor_hz") = 50, py::arg("pcb_hz") = 50, py::arg("imu_poll_hz") = 500)
+            py::arg("motor_hz") = 50, py::arg("pcb_hz") = 50, py::arg("imu_poll_hz") = 500,
+            py::arg("dribbler_speed_mode") = false, py::arg("dribbler_speed_rpm") = 1000)
         .def_property_readonly("motion_source", &HardwareController::motion_source)
         .def("timing_diagnostics", &HardwareController::timing_diagnostics)
         .def("move", &HardwareController::move, py::arg("direction"), py::arg("speed"),

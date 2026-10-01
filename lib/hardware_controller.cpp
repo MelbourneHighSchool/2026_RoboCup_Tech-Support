@@ -87,11 +87,14 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
                                      double dribbler_motor_current_limit,
                                      double kick_pulse_length, double kick_cooldown,
                                      std::shared_ptr<StatusDisplay> display, bool use_pcb,
-                                     double motor_hz, double pcb_hz, double imu_poll_hz) :
+                                     double motor_hz, double pcb_hz, double imu_poll_hz,
+                                     bool dribbler_speed_mode, double dribbler_speed_rpm) :
     config_(config),
     use_pcb_(use_pcb),
     drive_motor_current_limit_(current_limit_lsb(drive_motor_current_limit)),
     dribbler_motor_current_limit_(current_limit_lsb(dribbler_motor_current_limit)),
+    dribbler_speed_mode_(dribbler_speed_mode),
+    dribbler_speed_(0),
     constant_speed_current_limit_(drive_motor_current_limit_),
     acceleration_current_limit_(drive_motor_current_limit_),
     kick_pulse_(seconds_duration(kick_pulse_length, "Kick pulse length")),
@@ -105,6 +108,10 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
     motor_period_ = period(motor_hz, 200);
     pcb_period_ = period(pcb_hz, 200);
     imu_poll_period_ = period(imu_poll_hz, 1000);
+    if (!std::isfinite(dribbler_speed_rpm) || dribbler_speed_rpm < 0 ||
+        dribbler_speed_rpm > MOTOR_SPEED_LIMIT / RPM_TO_MOTOR_SPEED)
+        throw std::invalid_argument("Dribbler speed outside supported range");
+    dribbler_speed_ = static_cast<int32_t>(dribbler_speed_rpm * RPM_TO_MOTOR_SPEED);
     config_.validate();
     if (calibration.size() != 4 && calibration.size() != 5)
         throw std::invalid_argument("HardwareController requires four wheels and an optional dribbler");
@@ -173,6 +180,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
             motor.configureCommandMode(2);
             motor.configureOperatingModeAndSensor(3, 1);
             motor.setTorque(0);
+            motor.setSpeed(0);
             motor.setCurrentLimitFOC(dribbler_motor_current_limit_);
             motor.setIdPidConstants(1500, 200);
             motor.setIqPidConstants(1500, 200);
@@ -182,7 +190,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
             motor.setSpeedLimit(MOTOR_SPEED_LIMIT);
             motor.setELECANGLEOFFSET(calibration[4].elecangleoffset);
             motor.setSINCOSCENTRE(calibration[4].sincoscentre);
-            motor.configureCommandMode(2);
+            motor.configureCommandMode(dribbler_speed_mode_ ? 12 : 2);
         }
         if (display_) display_->component("MOTOR", '+');
         init_source = "IMU";
@@ -611,7 +619,12 @@ void HardwareController::drive_loop() noexcept {
                     motor_operation(i, [&] { motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED)); });
                 // Spin the dribbler, if configured
                 if (motors_.size() > 4)
-                    motor_operation(4, [&] { motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_); });
+                    motor_operation(4, [&] {
+                        if (dribbler_speed_mode_)
+                            motors_[4].setSpeed(command.dribbler * dribbler_speed_);
+                        else
+                            motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_);
+                    });
                 odometry = read_odometry_locked();
             }
             motion_source_->publish(std::move(odometry));

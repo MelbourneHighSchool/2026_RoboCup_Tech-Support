@@ -9,7 +9,9 @@ from lib.hardware_test_utils import WHEEL_DIAMETER, YAW_CORRECT_THRESHOLD
 
 USE_PCB = False
 
+DRIBBLER_SPEED_MODE = False
 DRIBBLER_TORQUE = 1.0  # Amps
+DRIBBLER_SPEED = 1000  # RPM; current is limited by DRIBBLER_TORQUE
 RPM_PRINT_INTERVAL = 0.25
 
 
@@ -27,8 +29,13 @@ def main():
             0,
             YAW_CORRECT_THRESHOLD,
             drive_motor_current_limit=0.0,
-            dribbler_motor_current_limit=DRIBBLER_TORQUE, use_pcb=USE_PCB)
-        print(f"Spinning dribbler at {DRIBBLER_TORQUE:g} A. Press Ctrl+C to stop.")
+            dribbler_motor_current_limit=DRIBBLER_TORQUE,
+            dribbler_speed_mode=DRIBBLER_SPEED_MODE,
+            dribbler_speed_rpm=DRIBBLER_SPEED,
+            use_pcb=USE_PCB)
+        setting = (f"{DRIBBLER_SPEED:g} RPM (limit {DRIBBLER_TORQUE:g} A)"
+                   if DRIBBLER_SPEED_MODE else f"{DRIBBLER_TORQUE:g} A")
+        print(f"Spinning dribbler at {setting}. Press Ctrl+C to stop.")
         next_rpm_print = time.monotonic()
         while True:
             # No translation or yaw correction. Repeated calls also surface native faults.
