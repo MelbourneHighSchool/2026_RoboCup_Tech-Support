@@ -11,6 +11,8 @@ MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 1000
 YAW_CORRECT_THRESHOLD = 3
 USE_PCB = False
+DRIBBLER_CURRENT_LIMIT = 4.0  # Amps
+DRIBBLER_SPEED_RPM = 1000
 
 
 def create_hardware(*, max_motor_rpm=MAX_MOTOR_RPM, kicker=False, use_pcb=USE_PCB):
@@ -22,6 +24,9 @@ def create_hardware(*, max_motor_rpm=MAX_MOTOR_RPM, kicker=False, use_pcb=USE_PC
         MAX_YAW_RPM,
         max_motor_rpm,
         YAW_CORRECT_THRESHOLD,
+        dribbler_motor_current_limit=DRIBBLER_CURRENT_LIMIT,
+        dribbler_speed_mode=True,
+        dribbler_speed_rpm=DRIBBLER_SPEED_RPM,
         use_pcb=use_pcb,
         **kwargs,
     )

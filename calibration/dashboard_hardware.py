@@ -69,6 +69,12 @@ class Hardware:
             self.jobs.put_nowait((action, data, cancel))
             self.status["mode"] = "queued " + action
 
+    def set_line_thresholds(self, thresholds):
+        """Apply saved classification settings to an active localisation session."""
+        with self.lock:
+            if self.session is not None and self.session.line_feed is not None:
+                self.session.line_feed.thresholds = dict(thresholds)
+
     def snapshot(self):
         with self.lock:
             result = copy.deepcopy({**self.status, "target": self.target, "trajectory": list(self.trail)})
@@ -161,11 +167,12 @@ class Hardware:
             feed_imu_yaw_prior(lidar, imu, startup)
             lidar.start_coordinates(*PITCH, use_pcb=self.use_pcb,
                                     motion_source=imu.motion_source, prediction_hz=rates["odometry_hz"])
-            line_feed = LineSensorFeed(self.root / "line_sensor_calibration.json", use_pcb=self.use_pcb)
+            with self.lock:
+                line_feed = LineSensorFeed(self.root / "line_sensor_calibration.json", use_pcb=self.use_pcb)
+                self.session = LocalisationSession(lidar, imu, startup, LidarVelocityEstimator(),
+                                                   line_feed=line_feed, use_pcb=self.use_pcb)
             if line_feed.error:
                 self.notify(line_feed.error, error=True)
-            self.session = LocalisationSession(lidar, imu, startup, LidarVelocityEstimator(),
-                                               line_feed=line_feed, use_pcb=self.use_pcb)
             self.polling_measurements = PollingMeasurements(imu, rates)
             self.localisation_period = 1 / rates["odometry_hz"]
         except BaseException:

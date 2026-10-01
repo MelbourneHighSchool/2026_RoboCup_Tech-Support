@@ -109,7 +109,7 @@ static void clear_yaw_input() {
 static void set_line_input(const std::vector<std::string>& colours, double stamp) {
     if (colours.size() != PCB_SENSOR_COUNT || !std::isfinite(stamp) || stamp <= 0)
         throw std::invalid_argument("Expected 30 colours and a positive finite timestamp");
-    for (const auto& colour : colours) if (colour != "black" && colour != "white" && colour != "green")
+    for (const auto& colour : colours) if (colour != "black" && colour != "white" && colour != "green" && colour != "green_or_black")
         throw std::invalid_argument("Invalid floor colour");
     if (!g_autonomous.load()) { loc_set_line_readings(colours, stamp); return; }
     std::lock_guard<std::mutex> lock(g_worker_mutex);

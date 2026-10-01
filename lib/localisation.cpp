@@ -1164,7 +1164,9 @@ static float score_floor_colours(const Particle& p, const LocLineReadings& sampl
         // A 10 mm footprint softens paint edges and small placement errors.
         for (float dx : {-10.0f, 0.0f, 10.0f})
             for (float dy : {-10.0f, 0.0f, 10.0f})
-                matches += floor_colour(x+dx,y+dy) == observed;
+                matches += (sample.colours[i] == "green_or_black"
+                    ? floor_colour(x+dx,y+dy) != 2
+                    : floor_colour(x+dx,y+dy) == observed);
         score += std::log(0.05f + 0.85f * matches/9.0f);
     }
     // Nearby sensors are correlated: cap the entire ring at four observations.
@@ -1446,8 +1448,8 @@ void loc_set_line_readings(const std::vector<std::string>& colours, double times
     if (colours.size() != PCB_SENSOR_COUNT || !std::isfinite(timestamp_s) || timestamp_s <= 0)
         throw std::invalid_argument("Expected 30 colours and a positive finite timestamp");
     for (const auto& colour : colours)
-        if (colour != "black" && colour != "green" && colour != "white")
-            throw std::invalid_argument("Line colour must be black, green, or white");
+        if (colour != "black" && colour != "green" && colour != "white" && colour != "green_or_black")
+            throw std::invalid_argument("Invalid line colour");
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     PublishOnExit publication;
     const double now = monotonic_time_s();

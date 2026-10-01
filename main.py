@@ -50,7 +50,8 @@ USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Se
 WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
 CONSTANT_SPEED_TORQUE = 2.0  # Amps; The current limit when the bot is at a constant speed.
 ACCELERATION_TORQUE = 3.0  # Amps; The current limit when the bot is accelerating.
-DRIBBLER_TORQUE = 2.0  # Amps; The current limit for the dribbler motor.
+DRIBBLER_TORQUE = 4.0  # Amps; The current limit for the dribbler motor.
+DRIBBLER_SPEED = 1000  # RPM; target speed while the dribbler is on.
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
 
 LIDAR_BAUDRATE = 460800
@@ -382,6 +383,8 @@ try:
         YAW_CORRECT_THRESHOLD,
         kicker_pin=int(KICKER_PIN.id),
         dribbler_motor_current_limit=DRIBBLER_TORQUE,
+        dribbler_speed_mode=True,
+        dribbler_speed_rpm=DRIBBLER_SPEED,
         display=display,
         use_pcb=USE_PCB,
         motor_hz=100,

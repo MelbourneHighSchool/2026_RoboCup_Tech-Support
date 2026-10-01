@@ -42,12 +42,14 @@ handle('pcbBrightnessSave', 'save_pcb_brightness', () => {
 });
 function lineValues() {
   const black = Number($('lineBlack').value), white = Number($('lineWhite').value);
+  const detect_black = $('lineDetectBlack').checked;
   if (['lineBlack', 'lineWhite'].some(id => $(id).value === '') ||
-      ![black, white].every(v => Number.isInteger(v) && v >= 0 && v <= 255) || black === white)
-    throw new Error('Enter different whole-number thresholds between 0 and 255.');
-  return {black, white};
+      ![black, white].every(v => Number.isInteger(v) && v >= 0 && v <= 255) || (detect_black && black === white))
+    throw new Error('Enter whole-number thresholds between 0 and 255; they must differ when detecting black.');
+  return {black, white, detect_black};
 }
-function lineColour(value, black, white) {
+function lineColour(value, black, white, detect_black) {
+  if (!detect_black) return value >= white ? 'white' : 'green_or_black';
   if (black < white) return value <= black ? 'black' : value >= white ? 'white' : 'green';
   return value >= black ? 'black' : value <= white ? 'white' : 'green';
 }
@@ -89,31 +91,40 @@ function renderLineSensors(s) {
   let values;
   try { values = lineValues(); } catch (e) { $('lineRule').textContent = e.message; }
   if (values) {
-    const {black, white} = values;
-    $('lineRule').textContent = `Black ${black < white ? '≤' : '≥'} ${black} · Green between · White ${black < white ? '≥' : '≤'} ${white}`;
+    const {black, white, detect_black} = values;
+    $('lineRule').textContent = detect_black
+      ? `Black ${black < white ? '≤' : '≥'} ${black} · Green between · White ${black < white ? '≥' : '≤'} ${white}`
+      : `Green or black < ${white} · White ≥ ${white}`;
   }
   $('lineEditStatus').textContent = lineDirty ? 'Unsaved preview' : 'Showing saved thresholds (64 / 192 are provisional defaults).';
   const pcb = s?.hardware.pcb;
   const age = pcb?.age_s == null ? null : pcb.age_s + (performance.now() - lineReceivedAt) / 1000;
   const fresh = pcb?.valid && age != null && age <= 0.5 && pcb.readings?.length === layout.sensor_count;
-  const colours = {black:'#080c10', green:'#279b58', white:'#ffffff', unavailable:'#50616e'};
+  const colours = {black:'#080c10', green:'#279b58', green_or_black:'#618f6c', white:'#ffffff', unavailable:'#50616e'};
   lineNodes.forEach(({circle, title, card, sensor}) => {
     const {index, multiplexer, pin, bearing_deg: bearing} = sensor;
     const raw = fresh ? pcb.readings[index] : null;
-    const colour = raw != null && values ? lineColour(raw, values.black, values.white) : 'unavailable';
+    const colour = raw != null && values ? lineColour(raw, values.black, values.white, values.detect_black) : 'unavailable';
+    const label = colour === 'green_or_black' ? 'green or black' : colour;
     circle.setAttribute('fill', colours[colour]);
-    title.textContent = `Sensor ${index} · MUX ${multiplexer} pin ${pin} · ${bearing}° · ${raw ?? '—'} · ${colour}`;
-    card.textContent = `${index} · MUX ${multiplexer} pin ${pin} · ${bearing}°: ${raw ?? '—'} · ${colour}`;
+    title.textContent = `Sensor ${index} · MUX ${multiplexer} pin ${pin} · ${bearing}° · ${raw ?? '—'} · ${label}`;
+    card.textContent = `${index} · MUX ${multiplexer} pin ${pin} · ${bearing}°: ${raw ?? '—'} · ${label}`;
     card.style.borderLeftColor = colours[colour];
   });
-  $('pcbStatus').textContent = fresh ? `Live · sample age ${fmt(age, 2)} s · black / green / white`
+  $('pcbStatus').textContent = fresh ? `Live · sample age ${fmt(age, 2)} s · ${values?.detect_black ? 'black / green / white' : 'green or black / white'}`
     : pcb?.valid ? 'Readings are stale — sensors shown grey.'
     : s?.hardware.error ? `Unavailable: ${s.hardware.error}` : 'No live readings. Start sensors to connect.';
 }
 function setLineValues(values) {
   for (const colour of ['Black', 'White'])
     $( 'line' + colour).value = $('line' + colour + 'Slider').value = values[colour.toLowerCase()];
+  $('lineDetectBlack').checked = values.detect_black !== false;
+  $('lineBlack').disabled = $('lineBlackSlider').disabled = !$('lineDetectBlack').checked;
 }
+$('lineDetectBlack').onchange = () => {
+  $('lineBlack').disabled = $('lineBlackSlider').disabled = !$('lineDetectBlack').checked;
+  lineDirty = true; lineEditVersion++; renderLineSensors(state);
+};
 for (const colour of ['Black', 'White']) {
   for (const suffix of ['', 'Slider']) $('line' + colour + suffix).oninput = () => {
     $('line' + colour + (suffix ? '' : 'Slider')).value = $('line' + colour + suffix).value;

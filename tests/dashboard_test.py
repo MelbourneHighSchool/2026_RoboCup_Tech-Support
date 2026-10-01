@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class FakeHardware:
     def __init__(self, *_args, **_kwargs):
         self.calls = []
+        self.line_thresholds = None
         self.mode = "idle"
         self.stops = 0
         self.pcb_stops = 0
@@ -63,6 +64,9 @@ class FakeHardware:
 
     def request_stop_pcb(self):
         self.pcb_stops += 1
+
+    def set_line_thresholds(self, thresholds):
+        self.line_thresholds = dict(thresholds)
 
     def close(self):
         pass
@@ -101,14 +105,15 @@ def test_line_thresholds_save_reload_and_backup(dashboard):
         dashboard.command("save_line_thresholds", {"black": 10, "white": 200}, None)
     dashboard.command("save_line_thresholds", {"black": 20, "white": 210}, token)
     # Reversed polarity is supported; green remains between thresholds.
-    dashboard.command("save_line_thresholds", {"black": 220, "white": 30}, token)
+    dashboard.command("save_line_thresholds", {"black": 220, "white": 30, "detect_black": False}, token)
+    assert dashboard.hardware.line_thresholds == {"black": 220, "white": 30, "detect_black": False}
     path = dashboard.root / "line_sensor_calibration.json"
-    assert json.loads(path.read_text()) == {"black": 220, "white": 30,
+    assert json.loads(path.read_text()) == {"black": 220, "white": 30, "detect_black": False,
                                             "sensor_radius_mm": 75, "sensor_count": 30}
     assert list((dashboard.root / "calibration_backups").glob("line_sensor_calibration-*.json"))
     restored = Dashboard(dashboard.root, hardware_factory=FakeHardware, start=False)
     try:
-        assert restored.state()["line_thresholds"] == {"black": 220, "white": 30}
+        assert restored.state()["line_thresholds"] == {"black": 220, "white": 30, "detect_black": False}
     finally:
         restored.close()
     for value in ({"black": -1, "white": 200}, {"black": 10, "white": 256},
@@ -116,6 +121,17 @@ def test_line_thresholds_save_reload_and_backup(dashboard):
                   {"black": True, "white": 200}, {"black": "nan", "white": 200}):
         with pytest.raises((ValueError, TypeError)):
             line_thresholds(value)
+
+
+def test_saved_line_thresholds_update_active_hardware_feed():
+    hardware = Hardware.__new__(Hardware)
+    hardware.lock = threading.RLock()
+    feed = types.SimpleNamespace(thresholds={"black": 64, "white": 192, "detect_black": True})
+    hardware.session = types.SimpleNamespace(line_feed=feed)
+    updated = {"black": 64, "white": 192, "detect_black": False}
+    hardware.set_line_thresholds(updated)
+    assert feed.thresholds == updated
+    assert feed.thresholds is not updated
 
 
 def test_line_sensor_layout_preserves_gap_and_returns_owned_metadata(dashboard):

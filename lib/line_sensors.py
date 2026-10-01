@@ -27,8 +27,12 @@ def line_thresholds(value):
         if not math.isfinite(level) or not level.is_integer() or not 0 <= level <= 255:
             raise ValueError("Line sensor thresholds must be whole numbers between 0 and 255")
         result[colour] = int(level)
-    if result["black"] == result["white"]:
+    detect_black = value.get("detect_black", True)
+    if type(detect_black) is not bool:
+        raise TypeError("detect_black must be a boolean")
+    if detect_black and result["black"] == result["white"]:
         raise ValueError("Black and white thresholds must differ; green is between them")
+    result["detect_black"] = detect_black
     return result
 
 
@@ -37,6 +41,8 @@ def classify_readings(readings, thresholds):
     if len(readings) != SENSOR_COUNT or any(type(v) is not int or not 0 <= v <= 255 for v in readings):
         raise ValueError("Expected 30 integer sensor readings between 0 and 255")
     black, white = thresholds["black"], thresholds["white"]
+    if not thresholds.get("detect_black", True):
+        return ["white" if v >= white else "green_or_black" for v in readings]
     if black < white:
         return ["black" if v <= black else "white" if v >= white else "green" for v in readings]
     return ["black" if v >= black else "white" if v <= white else "green" for v in readings]

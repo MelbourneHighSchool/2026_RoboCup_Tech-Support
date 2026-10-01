@@ -36,6 +36,26 @@ def test_classify_boundaries_and_polarity(black, white, readings, expected):
     assert classify_readings(samples, line_thresholds({"black": black, "white": white})) == expected + ["green"] * 24
 
 
+def test_disabled_black_detection_uses_white_threshold_only():
+    thresholds = line_thresholds({"black": 192, "white": 192, "detect_black": False})
+    assert classify_readings([0, 64, 191, 192, 255] + [100] * 25, thresholds) == (
+        ["green_or_black"] * 3 + ["white"] * 2 + ["green_or_black"] * 25)
+    with pytest.raises(TypeError):
+        line_thresholds({"black": 64, "white": 192, "detect_black": "false"})
+
+
+def test_feed_passes_ambiguous_colours_to_localisation(tmp_path):
+    path = tmp_path / "line_sensor_calibration.json"
+    path.write_text(json.dumps({"black": 64, "white": 192, "detect_black": False}))
+    feed = LineSensorFeed(path, clock=lambda: 10, use_pcb=True)
+    calls = []
+    lidar = SimpleNamespace(set_line_readings=lambda *args: calls.append(args))
+    hardware = SimpleNamespace(get_pcb_snapshot=lambda: {
+        "timestamp_s": 9.9, "readings": [0, 191, 192] * 10, "valid": True})
+    feed.update(lidar, hardware)
+    assert calls == [(["green_or_black", "green_or_black", "white"] * 10, 9.9)]
+
+
 @pytest.mark.parametrize("readings", [[1] * 29, [1] * 31, [1] * 32, [-1] * 30, [256] * 30, [True] * 30, [1.5] * 30])
 def test_bad_readings_rejected(readings):
     with pytest.raises(ValueError):
@@ -98,6 +118,8 @@ def test_native_staging_does_not_change_pose(tmp_path):
         assert lidar.get_line_readings()["colours"][0] == "black"
         with pytest.raises(ValueError):
             lidar.set_line_readings(["red"] * 30, timestamp)
+        lidar.set_line_readings(["green_or_black"] * 30, time.monotonic())
+        assert lidar.get_line_readings()["colours"] == ["green_or_black"] * 30
         with pytest.raises(ValueError):
             lidar.set_line_readings(["green"], timestamp)
         with pytest.raises(ValueError, match="30 colours"):

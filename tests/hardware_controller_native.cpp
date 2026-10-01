@@ -557,6 +557,20 @@ void capped_acceleration() {
     }
     assert(reached_target);
 }
+void dribbler_speed_mode() {
+    auto state = std::make_shared<State>();
+    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state),
+        0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB,
+        50, 50, 500, true, 750);
+    controller.move(0, 0, 0, 0, 1);
+    wait_ticks(controller, 2);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        assert(has_packet(*state, 29, {0x21, 12}));
+        assert(state->speed[29] == static_cast<int32_t>(750 * RPM_TO_MOTOR_SPEED));
+    }
+    controller.stop();
+}
 void failures() {
     auto state = std::make_shared<State>();
     state->bad_firmware_address = 26;
@@ -765,6 +779,7 @@ int main() {
     lifecycle(4);
     lifecycle(5);
     capped_acceleration();
+    dribbler_speed_mode();
     failures();
     kicker_control();
     kicker_failure();

@@ -212,7 +212,7 @@ class Dashboard:
         self.frozen = OrderedDict()
         self.events = deque(maxlen=300)
         self.history = deque(maxlen=300)
-        self.line_thresholds = {"black": 64, "white": 192}
+        self.line_thresholds = {"black": 64, "white": 192, "detect_black": True}
         try:
             self.line_thresholds = line_thresholds(json.loads(
                 (self.root / "line_sensor_calibration.json").read_text()))
@@ -345,6 +345,8 @@ class Dashboard:
                 save_json(self.root / "line_sensor_calibration.json",
                           {**thresholds, "sensor_radius_mm": 75, "sensor_count": SENSOR_COUNT})
                 self.line_thresholds = thresholds
+                if hasattr(self.hardware, "set_line_thresholds"):
+                    self.hardware.set_line_thresholds(thresholds)
                 self.notify("Line sensor thresholds saved")
                 return {}
             if action == "release":

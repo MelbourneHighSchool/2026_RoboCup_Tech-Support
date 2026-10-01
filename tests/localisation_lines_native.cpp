@@ -36,6 +36,19 @@ static void gap_bearings_and_score_strength() {
     assert(std::abs(delta6 - (4.0f/30) * std::log(0.05f/0.90f)) < 0.00001f);
 }
 
+static void ambiguous_floor_scoring() {
+    const Particle p{1215,535,90,1};
+    LocLineReadings sample;
+    sample.colours.fill("green_or_black");
+    const float matching = score_floor_colours(p,sample);
+    sample.colours.fill("green");
+    const float green_only = score_floor_colours(p,sample);
+    assert(matching > green_only); // Black field markings remain possible.
+    const Particle white{275,900,0,1};
+    sample.colours.fill("green_or_black");
+    assert(score_floor_colours(white,sample) < score_floor_colours(p,sample));
+}
+
 static double setup(bool enabled = true, bool ready = true) {
     loc_stop();
     g_rng.seed(42);
@@ -193,6 +206,7 @@ static void resumed_scan(bool enabled) {
 int main() {
     loc_init_map(2430,1820);
     gap_bearings_and_score_strength();
+    ambiguous_floor_scoring();
     setup(USE_PCB);
     assert(!g_use_pcb);
     assert(floor_colour(275,900)==2 && floor_colour(350,900)==1);
