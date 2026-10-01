@@ -513,32 +513,46 @@ void HardwareController::pcb_loop() noexcept {
                 if (kick) next_kick_time_ = Clock::now() + kick_cooldown_;
             }
             // Pcb takes the bus mutex; never hold state_mutex_ during I/O.
-            if (kick) pcb_->kick();
-            const auto requested = Clock::now();
-            const auto scan = pcb_->read_sensors();
-            record_timing("pcb", 0, std::chrono::duration<double>(Clock::now() - requested).count());
-            const double timestamp = std::chrono::duration<double>(
-                Clock::now().time_since_epoch()).count();
-            {
+            try {
+                if (kick) {
+                    pcb_->kick();
+                    // The STM32 rearms its slave listener after the write completes.
+                    // Give it a poll interval before addressing it for a read.
+                } else {
+                    const auto requested = Clock::now();
+                    const auto scan = pcb_->read_sensors();
+                    record_timing("pcb", 0, std::chrono::duration<double>(Clock::now() - requested).count());
+                    const double timestamp = std::chrono::duration<double>(
+                        Clock::now().time_since_epoch()).count();
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    // A stop/fault may have occurred while the read was in flight.
+                    if (!running_) break;
+                    pcb_snapshot_ = {scan, timestamp, std::nullopt, true};
+                    if (!pcb_error_.empty()) {
+                        pcb_error_.clear();
+                        if (display_) display_->component("PCB", '+');
+                        std::fprintf(stderr, "PCB communication recovered\n");
+                    }
+                }
+            } catch (const std::exception& exc) {
+                // Do not retry a kick: the PCB may already have fired it. Keep
+                // polling reads so a transient bus error can recover in place.
                 std::lock_guard<std::mutex> lock(state_mutex_);
-                // A stop/fault may have occurred while the read was in flight.
-                if (!running_) break;
-                pcb_snapshot_ = {scan, timestamp, std::nullopt, true};
+                pcb_snapshot_.valid = false;
+                target_.kick = false;
+                if (pcb_error_.empty()) {
+                    pcb_error_ = "PCB communication failed: " + std::string(exc.what()) +
+                                 "; sensors and kicking temporarily disabled";
+                    if (display_) display_->component("PCB", '!', pcb_error_);
+                    std::fprintf(stderr, "%s\n", pcb_error_.c_str());
+                }
             }
             next += period;
             const auto now = Clock::now();
             if (next <= now) next = now + period; // Skip missed polls after a stall.
         }
     } catch (const std::exception& exc) {
-        // A PCB outage removes floor observations and kicking, but must not
-        // interrupt the motor/IMU workers or activate the GPIO kicker.
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        pcb_snapshot_.valid = false;
-        target_.kick = false;
-        pcb_error_ = "PCB communication failed: " + std::string(exc.what()) +
-                     "; sensors and kicking disabled";
-        if (display_) display_->component("PCB", '!', pcb_error_);
-        std::fprintf(stderr, "%s\n", pcb_error_.c_str());
+        fail("PCB worker failed: " + std::string(exc.what()), "OTHER");
     }
 }
 void HardwareController::drive_loop() noexcept {

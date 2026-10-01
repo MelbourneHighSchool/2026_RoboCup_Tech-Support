@@ -41,7 +41,7 @@ struct HardwareHealth {
     std::string fault_source, error;
     int motor_address;
     uint64_t imu_recovery_generation;
-    std::string pcb_error; // Nonfatal; PCB reads and kicking stay disabled until restart.
+    std::string pcb_error; // Nonfatal; reads continue and clear this on recovery.
 };
 struct PcbSnapshot {
     std::array<uint8_t, PCB_SENSOR_COUNT> readings{};

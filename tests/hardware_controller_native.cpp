@@ -21,6 +21,7 @@ struct State {
     int delay_ms = 0;
     int pcb_reads = 0, pcb_kicks = 0, pcb_attempts = 0;
     int fail_address = -1, fail_opcode = -1, bad_firmware_address = -1;
+    bool fail_read_after_kick = false, fail_next_pcb_read = false;
     std::atomic<bool> in_transfer{false};
     std::atomic<bool> block_motor{false}, motor_blocked{false};
 };
@@ -46,12 +47,17 @@ public:
                 (state_->fail_opcode == -1 || (!reading && state_->fail_opcode == data[0])))
                 throw std::runtime_error("PCB unavailable");
             if (reading) {
+                if (state_->fail_next_pcb_read) {
+                    state_->fail_next_pcb_read = false;
+                    throw std::runtime_error("PCB read immediately after kick failed");
+                }
                 assert(size == 30);
                 for (size_t i = 0; i < size; ++i) data[i] = i;
                 ++state_->pcb_reads;
             } else {
                 assert(size == 1 && data[0] == 255);
                 ++state_->pcb_kicks;
+                if (state_->fail_read_after_kick) state_->fail_next_pcb_read = true;
             }
             return;
         }
@@ -716,9 +722,29 @@ int main() {
         controller.stop();
         assert(!controller.get_pcb_snapshot().valid);
     }
-    // Failed reads, failed kicks, and an absent PCB at startup all degrade
-    // without stopping drive/IMU workers or falling back to GPIO kicking.
-    for (int failure : {0, 1, 2}) {
+    // A transient read after a kick recovers without repeating that kick.
+    {
+        auto state = std::make_shared<State>();
+        state->fail_read_after_kick = true;
+        HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state),
+            0x4a, 10, -1, "", nullptr, 8, 1, 0.02, 0.1, nullptr, true);
+        await_condition([&] { return controller.get_pcb_snapshot().valid; });
+        controller.move(0, 0, 0, 0, 0, true);
+        await_condition([&] { return !controller.health().pcb_error.empty(); });
+        assert(!controller.get_pcb_snapshot().valid);
+        await_condition([&] { return controller.health().pcb_error.empty() && controller.get_pcb_snapshot().valid; });
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            assert(state->pcb_kicks == 1);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(110));
+        controller.move(0, 0, 0, 0, 0, true);
+        await_condition([&] { std::lock_guard<std::mutex> lock(state->mutex); return state->pcb_kicks == 2; });
+        controller.stop();
+    }
+    // Persistent read failures and an absent PCB at startup do not stop
+    // drive/IMU workers or fall back to GPIO kicking. Polling resumes on recovery.
+    for (int failure : {0, 2}) {
         auto state = std::make_shared<State>();
         auto gpio = std::make_shared<KickState>();
         if (failure == 2) state->fail_address = 0x37;
@@ -729,18 +755,18 @@ int main() {
             await_condition([&] { return controller.get_pcb_snapshot().valid; });
             std::lock_guard<std::mutex> lock(state->mutex);
             state->fail_address = 0x37;
-            state->fail_opcode = failure == 1 ? 255 : -1;
+            state->fail_opcode = -1;
         }
         controller.move(0, 300, 0, 0, 1, true);
         await_condition([&] { return !controller.health().pcb_error.empty(); });
         assert(controller.health().error.empty());
         assert(controller.health().fault_source.empty());
         assert(!controller.get_pcb_snapshot().valid);
-        int attempts;
+        int attempts, kicks;
         {
             std::lock_guard<std::mutex> lock(state->mutex);
             attempts = state->pcb_attempts;
-            state->fail_address = -1; // Reconnection must not restart PCB I/O.
+            kicks = state->pcb_kicks;
         }
         const auto ticks = controller.loop_count();
         const auto imu_count = controller.imu_update_count();
@@ -755,19 +781,52 @@ int main() {
         close(controller.current_speed(), 400);
         {
             std::lock_guard<std::mutex> lock(state->mutex);
-            assert(state->pcb_attempts == attempts);
-            assert(state->pcb_kicks == 0);
+            assert(state->pcb_attempts > attempts);
+            assert(state->pcb_kicks == kicks);
             assert(state->speed[25] != 0);
         }
         {
             std::lock_guard<std::mutex> lock(gpio->mutex);
             assert(gpio->starts.empty());
         }
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_address = -1;
+        }
+        await_condition([&] { return controller.health().pcb_error.empty() && controller.get_pcb_snapshot().valid; });
         controller.stop();
         {
             std::lock_guard<std::mutex> lock(state->mutex);
             for (int address : {25, 26, 27, 28}) assert(state->speed[address] == 0);
         }
+    }
+    // A failed kick write is ambiguous; recovery may resume reads, but never
+    // repeats that command without a new move request.
+    {
+        auto state = std::make_shared<State>();
+        HardwareController controller(calibration(4), config, "unused", std::make_unique<FakeWire>(state),
+            0x4a, 10, -1, "", nullptr, 8, 1, 0.02, 0.1, nullptr, true);
+        await_condition([&] { return controller.get_pcb_snapshot().valid; });
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_address = 0x37;
+            state->fail_opcode = 255;
+        }
+        controller.move(0, 0, 0, 0, 0, true);
+        await_condition([&] { return !controller.health().pcb_error.empty(); });
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_address = -1;
+        }
+        await_condition([&] { return controller.health().pcb_error.empty() && controller.get_pcb_snapshot().valid; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(110));
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            assert(state->pcb_kicks == 0);
+        }
+        controller.move(0, 0, 0, 0, 0, true);
+        await_condition([&] { std::lock_guard<std::mutex> lock(state->mutex); return state->pcb_kicks == 1; });
+        controller.stop();
     }
     shared_display_lifecycle();
     imu_pause_finishes_kicker();
