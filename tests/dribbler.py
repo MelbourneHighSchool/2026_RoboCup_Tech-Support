@@ -42,7 +42,11 @@ def main():
             hardware.move(0, 0, 0, 0, dribbler=1)
             now = time.monotonic()
             if now >= next_rpm_print:
-                print(f"Dribbler speed: {hardware.get_dribbler_rpm():.0f} RPM")
+                rpm, error1, error2 = hardware.get_dribbler_qdr()
+                print(f"Dribbler speed: {rpm:.0f} RPM")
+                if error1 or error2:
+                    print(f"Dribbler QDR errors: ERROR1=0x{error1:02X}, "
+                          f"ERROR2=0x{error2:02X}", flush=True)
                 next_rpm_print = now + RPM_PRINT_INTERVAL
             time.sleep(0.05)
     except KeyboardInterrupt:

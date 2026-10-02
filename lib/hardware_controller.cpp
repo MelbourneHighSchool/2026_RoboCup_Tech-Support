@@ -352,6 +352,9 @@ HardwareController::LocalisationSample HardwareController::read_odometry_locked(
     return sample;
 }
 double HardwareController::get_dribbler_rpm() {
+    return std::get<0>(get_dribbler_qdr());
+}
+std::tuple<double, int, int> HardwareController::get_dribbler_qdr() {
     std::lock_guard<std::mutex> bus_lock(wire_->mutex);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -361,7 +364,8 @@ double HardwareController::get_dribbler_rpm() {
         throw std::runtime_error("No dribbler motor is configured");
     try {
         motor_operation(4, [&] { motors_[4].updateQuickDataReadout(); });
-        return motors_[4].getSpeedQDR() / RPM_TO_MOTOR_SPEED;
+        return {motors_[4].getSpeedQDR() / RPM_TO_MOTOR_SPEED,
+                motors_[4].getERROR1QDR(), motors_[4].getERROR2QDR()};
     } catch (const std::exception& exc) {
         fail(exc.what());
         throw MotorCommunicationError(exc.what());

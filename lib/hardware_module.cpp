@@ -160,6 +160,8 @@ PYBIND11_MODULE(hardware_controller, module) {
         })
         .def("get_dribbler_rpm", &HardwareController::get_dribbler_rpm,
              py::call_guard<py::gil_scoped_release>())
+        .def("get_dribbler_qdr", &HardwareController::get_dribbler_qdr,
+             py::call_guard<py::gil_scoped_release>())
         .def("stop", &HardwareController::stop, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("loop_count", &HardwareController::loop_count)
         .def_property_readonly("current_speed", &HardwareController::current_speed)

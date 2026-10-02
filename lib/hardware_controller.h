@@ -16,6 +16,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <functional>
@@ -92,6 +93,7 @@ public:
     std::shared_ptr<MotionSource> motion_source() const { return motion_source_; }
     LocalisationSample get_localisation_sample();
     double get_dribbler_rpm();
+    std::tuple<double, int, int> get_dribbler_qdr();
     void stop();
     void set_drive_current_limits(double constant_speed_amps, double acceleration_amps);
     uint64_t loop_count() const { return loop_count_.load(); }
