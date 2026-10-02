@@ -24,6 +24,7 @@ def writes_versioned_game_and_detection_files():
             (1, 2, 3, 4, 5, True, "STRIKER", False, 10, 500, 20, False, True),
             elapsed_s=0.25,
             other_bots=[(100, 200), (300, 400)],
+            pi_temperature_c=54.321,
         )
         session.record_detection(
             {
@@ -56,6 +57,7 @@ def writes_versioned_game_and_detection_files():
         with session.game_path.open(encoding="utf-8", newline="") as handle:
             game_rows = list(csv.DictReader(handle))
         assert game_rows[0]["bot_mode"] == "STRIKER"
+        assert float(game_rows[0]["pi_temperature_c"]) == 54.321
         assert float(game_rows[0]["elapsed_s"]) == 0.25
 
         with session.detections_path.open(

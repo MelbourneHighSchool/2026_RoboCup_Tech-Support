@@ -322,6 +322,10 @@ def format_log_value(value) -> str:
 
 def parse_log_frame(tokens: Sequence[str]) -> dict | None:
     """Parse one CSV log line into pose / ball / optional controller fields."""
+    temperature_c = None
+    if tokens and tokens[-1].startswith("pi_temperature_c="):
+        temperature_c = parse_optional_float(tokens[-1].split("=", 1)[1])
+        tokens = tokens[:-1]
     if len(tokens) < 3:
         return None
 
@@ -371,6 +375,7 @@ def parse_log_frame(tokens: Sequence[str]) -> dict | None:
         "ball_y": int(ball_y_raw) if ball_y_raw is not None else None,
         "controller": controller,
         "other_bots": other_bots,
+        "pi_temperature_c": temperature_c,
     }
 
 

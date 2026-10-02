@@ -1,10 +1,72 @@
+import ast
+from pathlib import Path
 import unittest
 
 from lib.ball_possession import (
     BallExtrapolator,
     BallPossessionTracker,
     ball_is_near_bot,
+    teammate_visible_ball_position,
 )
+
+
+class TeammateBallPriorityTests(unittest.TestCase):
+    def resolve(self, *, timed_out=True, self_candidate=False, carrier=None,
+                captured=False, local_position=None, visible=True):
+        # Exercise the actual main-loop arbitration without importing hardware.
+        tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
+        branch = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "teammate_ball_position" in ast.unparse(node.test)
+        )
+        tracker = BallPossessionTracker()
+        context = dict(
+            ball_captured=captured,
+            ball_x=local_position[0] if local_position else None,
+            ball_y=local_position[1] if local_position else None,
+            teammate_ball_position=teammate_visible_ball_position({
+                "ball_visible": visible, "observed_ball_x": 800,
+                "observed_ball_y": 900,
+            }),
+            self_ball_candidate=self_candidate,
+            ball_prediction_timed_out=timed_out,
+            carried_ball_position=carrier,
+            ball_possession_tracker=tracker,
+            x_pos=100, y_pos=100, yaw=0,
+            math=__import__("math"),
+        )
+        exec(compile(ast.Module(body=[branch], type_ignores=[]), "main.py", "exec"), context)
+        return context["ball_x"], context["ball_y"], context["ball_captured"]
+
+    def test_teammate_overrides_self_capture_assumption_after_timeout(self):
+        self.assertEqual(self.resolve(self_candidate=True), (800, 900, False))
+
+    def test_teammate_overrides_enemy_carrier_after_timeout(self):
+        self.assertEqual(self.resolve(carrier=(300, 400)), (800, 900, False))
+
+    def test_local_prediction_keeps_priority_before_timeout(self):
+        self.assertEqual(
+            self.resolve(timed_out=False, local_position=(200, 250)),
+            (200, 250, False),
+        )
+
+    def test_break_beam_capture_keeps_priority(self):
+        self.assertEqual(
+            self.resolve(captured=True, local_position=(200, 100)),
+            (200, 100, True),
+        )
+
+    def test_inferred_teammate_report_does_not_override_assumption(self):
+        self.assertEqual(
+            self.resolve(visible=False, carrier=(300, 400)), (300, 400, False)
+        )
+
+    def test_legacy_and_invalid_reports_are_not_direct_sightings(self):
+        for message in (None, {"ball_x": 800, "ball_y": 900},
+                        {"ball_visible": True, "observed_ball_x": float("nan"),
+                         "observed_ball_y": 900}):
+            self.assertIsNone(teammate_visible_ball_position(message))
 
 
 class BallPossessionTrackerTests(unittest.TestCase):

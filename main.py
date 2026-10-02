@@ -16,7 +16,9 @@ from lib.hardware_controller import (
 import defence
 import striker
 from lib import lidar, switch
-from lib.ball_possession import BallPossessionTracker, ball_is_near_bot
+from lib.ball_possession import (
+    BallPossessionTracker, ball_is_near_bot, teammate_visible_ball_position,
+)
 from lib.bot_fusion import BotRangeFusion, FusionConfig
 from lib.break_beam import Breakbeam
 from lib.camera import Camera
@@ -33,6 +35,7 @@ from lib.localisation_motion import (
 )
 from lib.loop_timing import FpsMonitor, RateLimiter
 from lib.pcb_brightness import restore_brightness
+from lib.pi_temperature import PiTemperature
 from lib.recording_session import RecordingSession
 from state import FusionMode, GameState, StartupStage
 
@@ -43,13 +46,13 @@ LOGIC_HZ = 150
 MAX_POSE_AGE_S = 0.1
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
-ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
+ENABLE_COMMUNICATION = True # Use lib/communication.py to communicate between bots.
 ENABLE_ROLE_SWITCHING = True
 USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
-CONSTANT_SPEED_TORQUE = 2.0  # Amps; The current limit when the bot is at a constant speed.
-ACCELERATION_TORQUE = 3.0  # Amps; The current limit when the bot is accelerating.
+CONSTANT_SPEED_TORQUE = 3.0  # Amps; The current limit when the bot is at a constant speed.
+ACCELERATION_TORQUE = 4.0  # Amps; The current limit when the bot is accelerating.
 DRIBBLER_TORQUE = 4.0  # Amps; The current limit for the dribbler motor.
 DRIBBLER_SPEED = 1000  # RPM; target speed while the dribbler is on.
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -244,6 +247,7 @@ recording_session = None
 display = None
 startup_stage = StartupStage.OTHER
 fusion_recorder = None
+pi_temperature = None
 
 
 def record_bot_fusion(event):
@@ -333,6 +337,9 @@ def feed_imu_yaw_prior(imu_sensor):
 
 
 try:
+    if args.stream or args.save_log is not None or args.record_session is not None:
+        pi_temperature = PiTemperature()
+        pi_temperature.start()
     try:
         restore_brightness()
     except Exception as exc:
@@ -706,7 +713,16 @@ try:
                 and last_ball_x is not None
                 and now - last_ball_update >= BALL_TIMEOUT
             )
-            if not ball_captured and ball_prediction_timed_out:
+            teammate_ball_position = teammate_visible_ball_position(peer_msg)
+            if (
+                not ball_captured
+                and ball_x is None and ball_y is None
+                and teammate_ball_position is not None
+            ):
+                ball_x, ball_y = teammate_ball_position
+                self_ball_candidate = False
+                ball_possession_tracker.clear()
+            elif not ball_captured and ball_prediction_timed_out:
                 if self_ball_candidate:
                     ball_captured = True
                     ball_possession_tracker.clear()
@@ -714,16 +730,13 @@ try:
                     ball_y = y_pos + 100 * math.sin(math.radians(yaw))
                 elif carried_ball_position is not None:
                     ball_x, ball_y = carried_ball_position
-            if (
-                ball_x is None
-                and ball_y is None
-                and peer_msg is not None
-                and peer_msg.get("ball_x") is not None
-                and peer_msg.get("ball_y") is not None
-            ):
-                ball_x = peer_msg["ball_x"]
-                ball_y = peer_msg["ball_y"]
             if peer is not None:
+                ball_visible = (
+                    camera_healthy
+                    and ball_direction is not None
+                    and ball_distance is not None
+                )
+                visible_ball_angle = math.radians(yaw + ball_direction) if ball_visible else None
                 peer.send(
                     {
                         "x": x_pos,
@@ -732,6 +745,15 @@ try:
                         "mode": bot_mode.name,
                         "ball_x": ball_x,
                         "ball_y": ball_y,
+                        "ball_visible": ball_visible,
+                        "observed_ball_x": (
+                            x_pos + ball_distance * math.cos(visible_ball_angle)
+                            if ball_visible else None
+                        ),
+                        "observed_ball_y": (
+                            y_pos + ball_distance * math.sin(visible_ball_angle)
+                            if ball_visible else None
+                        ),
                     }
                 )
 
@@ -800,6 +822,7 @@ try:
                     dribbler,
                 ]
                 other_bot_positions = friendly_bot_positions + enemy_bot_positions
+                temperature_c = pi_temperature.celsius
                 log_line = ",".join(
                     "None" if value is None else str(value)
                     for value in (
@@ -807,13 +830,15 @@ try:
                         *(coordinate for position in other_bot_positions for coordinate in position),
                     )
                 )
+                log_line += f",pi_temperature_c={temperature_c}"
                 if args.stream:
                     send_log.update_latest_log(log_line)
                 if log_recorder_thread is not None:
                     update_latest_log_snapshot(log_line)
                 if recording_session is not None:
                     recording_session.record_game(
-                        log_values, other_bots=other_bot_positions
+                        log_values, other_bots=other_bot_positions,
+                        pi_temperature_c=temperature_c,
                     )
             try:
                 hardware_controller.move(direction, speed, rotation, 1.0, dribbler, kick=kick)
@@ -839,6 +864,8 @@ except Exception as exc:
             print(f"Warning: failed to publish final status: {status_error}")
     raise
 finally:
+    if pi_temperature is not None:
+        pi_temperature.stop()
     if fps_monitor is not None:
         fps_monitor.stop()
     if status is not None:

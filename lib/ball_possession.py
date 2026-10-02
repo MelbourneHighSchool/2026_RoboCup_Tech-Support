@@ -10,6 +10,21 @@ BOT_RADIUS_MM = 110.0
 MAX_BOT_MATCH_SPEED_MM_S = 2000.0
 
 
+def teammate_visible_ball_position(message: dict | None) -> tuple[float, float] | None:
+    """Accept only a teammate's direct camera sighting, never its predictions."""
+    if message is None or message.get("ball_visible") is not True:
+        return None
+    x, y = message.get("observed_ball_x"), message.get("observed_ball_y")
+    if not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        for value in (x, y)
+    ):
+        return None
+    return x, y
+
+
 def ball_is_near_bot(
     ball_position: tuple[float, float],
     bot_position: tuple[float, float],

@@ -28,6 +28,7 @@ GAME_FIELDS = (
     "kick",
     "dribbler",
     "other_bots",
+    "pi_temperature_c",
 )
 DETECTION_FIELDS = (
     "elapsed_s",
@@ -219,11 +220,14 @@ class RecordingSession:
         return time.monotonic() - self.epoch_monotonic
 
     def record_game(
-        self, values: Iterable[object], elapsed_s: float | None = None, *, other_bots=()
+        self, values: Iterable[object], elapsed_s: float | None = None, *, other_bots=(),
+        pi_temperature_c: float | None = None,
     ) -> bool:
         if elapsed_s is None:
             elapsed_s = self.elapsed()
-        return self.game_writer.submit((elapsed_s, *values, json.dumps(list(other_bots))))
+        return self.game_writer.submit(
+            (elapsed_s, *values, json.dumps(list(other_bots)), pi_temperature_c)
+        )
 
     def record_detection(self, event: Mapping[str, object]) -> bool:
         detection = event.get("detection")
