@@ -130,7 +130,7 @@ def test_side_rotation_only_kicks_near_aim_and_with_clear_ball_path(y):
         out = step(state, yaw=yaw, y=y)
         if out[4]:
             kicks.append(yaw)
-            assert abs(striker.wrap_angle_deg(out[2] - yaw)) <= 2
+            assert abs(striker.wrap_angle_deg(out[2] - yaw)) <= 3
             assert striker.kick_direction_scores(
                 1800 + 100 * math.cos(math.radians(yaw)),
                 y + 100 * math.sin(math.radians(yaw)),

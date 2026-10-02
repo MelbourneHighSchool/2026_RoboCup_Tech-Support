@@ -57,7 +57,7 @@ MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel s
 LIDAR_BAUDRATE = 460800
 
 MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
-YAW_CORRECT_THRESHOLD = 3 # deg; threshold of allowable yaw error.
+YAW_CORRECT_THRESHOLD = 1.5 # deg; threshold of allowable yaw error.
 
 CAMERA_PORT = 8000 # Port used for streaming the camera feed for debugging.
 CAMERA_RESOLUTION = (640, 640)
