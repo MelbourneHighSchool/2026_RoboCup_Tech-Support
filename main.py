@@ -17,7 +17,10 @@ import defence
 import striker
 from lib import lidar, switch
 from lib.ball_possession import (
-    BallPossessionTracker, ball_is_near_bot, teammate_visible_ball_position,
+    BallPossessionTracker,
+    ball_is_near_bot,
+    resolve_ball_position,
+    teammate_visible_ball_position,
 )
 from lib.bot_fusion import BotRangeFusion, FusionConfig
 from lib.break_beam import Breakbeam
@@ -714,22 +717,24 @@ try:
                 and now - last_ball_update >= BALL_TIMEOUT
             )
             teammate_ball_position = teammate_visible_ball_position(peer_msg)
-            if (
-                not ball_captured
-                and ball_x is None and ball_y is None
-                and teammate_ball_position is not None
-            ):
-                ball_x, ball_y = teammate_ball_position
+            local_ball_position = (
+                (ball_x, ball_y) if ball_x is not None and ball_y is not None else None
+            )
+            resolved_position, ball_captured, used_teammate = resolve_ball_position(
+                local_ball_position,
+                captured=ball_captured,
+                teammate_position=teammate_ball_position,
+                prediction_timed_out=ball_prediction_timed_out,
+                self_candidate=self_ball_candidate,
+                carrier_position=carried_ball_position,
+                robot_position=(x_pos, y_pos),
+                yaw=yaw,
+            )
+            if used_teammate:
                 self_ball_candidate = False
+            if used_teammate or ball_captured:
                 ball_possession_tracker.clear()
-            elif not ball_captured and ball_prediction_timed_out:
-                if self_ball_candidate:
-                    ball_captured = True
-                    ball_possession_tracker.clear()
-                    ball_x = x_pos + 100 * math.cos(math.radians(yaw))
-                    ball_y = y_pos + 100 * math.sin(math.radians(yaw))
-                elif carried_ball_position is not None:
-                    ball_x, ball_y = carried_ball_position
+            ball_x, ball_y = resolved_position if resolved_position is not None else (None, None)
             if peer is not None:
                 ball_visible = (
                     camera_healthy

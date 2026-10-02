@@ -1,11 +1,10 @@
-import ast
-from pathlib import Path
 import unittest
 
 from lib.ball_possession import (
     BallExtrapolator,
     BallPossessionTracker,
     ball_is_near_bot,
+    resolve_ball_position,
     teammate_visible_ball_position,
 )
 
@@ -13,31 +12,21 @@ from lib.ball_possession import (
 class TeammateBallPriorityTests(unittest.TestCase):
     def resolve(self, *, timed_out=True, self_candidate=False, carrier=None,
                 captured=False, local_position=None, visible=True):
-        # Exercise the actual main-loop arbitration without importing hardware.
-        tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
-        branch = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and "teammate_ball_position" in ast.unparse(node.test)
-        )
-        tracker = BallPossessionTracker()
-        context = dict(
-            ball_captured=captured,
-            ball_x=local_position[0] if local_position else None,
-            ball_y=local_position[1] if local_position else None,
-            teammate_ball_position=teammate_visible_ball_position({
+        position, captured, _used_teammate = resolve_ball_position(
+            local_position,
+            captured=captured,
+            teammate_position=teammate_visible_ball_position({
                 "ball_visible": visible, "observed_ball_x": 800,
                 "observed_ball_y": 900,
             }),
-            self_ball_candidate=self_candidate,
-            ball_prediction_timed_out=timed_out,
-            carried_ball_position=carrier,
-            ball_possession_tracker=tracker,
-            x_pos=100, y_pos=100, yaw=0,
-            math=__import__("math"),
+            prediction_timed_out=timed_out,
+            self_candidate=self_candidate,
+            carrier_position=carrier,
+            robot_position=(100, 100),
+            yaw=0,
         )
-        exec(compile(ast.Module(body=[branch], type_ignores=[]), "main.py", "exec"), context)
-        return context["ball_x"], context["ball_y"], context["ball_captured"]
+        x, y = position if position is not None else (None, None)
+        return x, y, captured
 
     def test_teammate_overrides_self_capture_assumption_after_timeout(self):
         self.assertEqual(self.resolve(self_candidate=True), (800, 900, False))

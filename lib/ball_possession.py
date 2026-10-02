@@ -10,6 +10,28 @@ BOT_RADIUS_MM = 110.0
 MAX_BOT_MATCH_SPEED_MM_S = 2000.0
 
 
+def resolve_ball_position(
+    local_position, *, captured, teammate_position, prediction_timed_out,
+    self_candidate, carrier_position, robot_position, yaw,
+):
+    """Return position, capture state, and whether a teammate sighting won."""
+    if captured:
+        return local_position, True, False
+    if local_position is None and teammate_position is not None:
+        return teammate_position, False, True
+    if prediction_timed_out:
+        if self_candidate:
+            angle = math.radians(yaw)
+            return (
+                (robot_position[0] + 100 * math.cos(angle),
+                 robot_position[1] + 100 * math.sin(angle)),
+                True, False,
+            )
+        if carrier_position is not None:
+            return carrier_position, False, False
+    return local_position, False, False
+
+
 def teammate_visible_ball_position(message: dict | None) -> tuple[float, float] | None:
     """Accept only a teammate's direct camera sighting, never its predictions."""
     if message is None or message.get("ball_visible") is not True:
