@@ -784,6 +784,11 @@ try:
                     bot_mode = BotMode.GOALIE
                 else:
                     bot_mode = BotMode.STRIKER
+            if default_bot_mode == BotMode.STRIKER:
+                if ball_x < 1000:
+                    bot_mode = BotMode.GOALIE
+                else:
+                    bot_mode = BotMode.STRIKER
 
             if bot_mode == BotMode.DEFENCE:
                 direction, speed, rotation, controller_state, kick, dribbler = defence.defence(
