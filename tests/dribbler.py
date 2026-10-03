@@ -39,7 +39,7 @@ def main():
         next_rpm_print = time.monotonic()
         while True:
             # No translation or yaw correction. Repeated calls also surface native faults.
-            hardware.move(0, 0, 0, 0, dribbler=1)
+            hardware.move(0, 0, 0, 0, dribbler=-1)
             now = time.monotonic()
             if now >= next_rpm_print:
                 rpm, error1, error2 = hardware.get_dribbler_qdr()

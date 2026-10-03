@@ -145,6 +145,8 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
     int init_address = -1;
     try {
         std::unique_lock<std::mutex> bus_lock(wire_->mutex);
+        if (calibration.size() == 5)
+            wire_->retryWritesFor(static_cast<uint8_t>(calibration[4].address));
         // Register all requested motors before any I/O so failure cleanup attempts all of them.
         for (const auto& cal : calibration) {
             motors_.emplace_back();

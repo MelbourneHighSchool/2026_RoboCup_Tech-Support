@@ -43,14 +43,14 @@ from lib.recording_session import RecordingSession
 from state import FusionMode, GameState, StartupStage
 
 USE_PCB = True
-DISABLE_LIDAR = True
+DISABLE_LIDAR = False
 
 LOG_FPS = 30 # How often the bot state is written to the log file
 LOGIC_HZ = 150
 MAX_POSE_AGE_S = 0.1
 FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
-ENABLE_COMMUNICATION = True # Use lib/communication.py to communicate between bots.
+ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
 ENABLE_ROLE_SWITCHING = True
 USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 

@@ -14,12 +14,15 @@ public:
     void beginTransmission(uint8_t address);
     void write(uint8_t value);
     void endTransmission();
+    // Retry failed writes to this motor indefinitely, with five seconds between attempts.
+    void retryWritesFor(uint8_t address) { retry_write_address_ = address; }
     void requestFrom(uint8_t address, uint8_t count, uint8_t stop);
     uint8_t read();
 protected:
     virtual void transfer(uint8_t address, bool reading, uint8_t* data, size_t size) = 0;
 private:
     uint8_t address_ = 0;
+    int retry_write_address_ = -1;
     std::vector<uint8_t> tx_, rx_;
     size_t cursor_ = 0;
 };

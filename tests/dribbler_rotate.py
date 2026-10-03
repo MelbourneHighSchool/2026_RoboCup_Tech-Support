@@ -25,7 +25,7 @@ def main():
                     0,
                     0,
                     yaw + CLOCKWISE_YAW_ERROR,
-                    1.0,
+                    -1.0,
                     1,
                 )
             time.sleep(COMMAND_INTERVAL)
