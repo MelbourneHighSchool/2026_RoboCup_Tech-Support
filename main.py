@@ -43,6 +43,7 @@ from lib.recording_session import RecordingSession
 from state import FusionMode, GameState, StartupStage
 
 USE_PCB = True
+DISABLE_LIDAR = True
 
 LOG_FPS = 30 # How often the bot state is written to the log file
 LOGIC_HZ = 150
@@ -156,6 +157,11 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--no-lidar",
+    action="store_true",
+    help="Skip LiDAR connection and startup waits; keep odometry/PCB localisation enabled.",
+)
+parser.add_argument(
     "--fps",
     action="store_true",
     help="Print logic-loop and background-thread rates once per second.",
@@ -165,6 +171,7 @@ parser.add_argument("--bot-fusion", choices=tuple(FusionMode),
 parser.add_argument("--bot-fusion-config", metavar="JSON", help="Measured fusion tolerances.")
 parser.add_argument("--bot-fusion-log", metavar="PATH", help="New JSONL fusion diagnostic file.")
 args = parser.parse_args()
+args.no_lidar = DISABLE_LIDAR or args.no_lidar
 try:
     fusion_config = FusionConfig.load(args.bot_fusion_config)
 except (OSError, ValueError, TypeError) as exc:
@@ -365,22 +372,25 @@ try:
         fusion_recorder = MotionCapture(args.bot_fusion_log,
                                         {"fusion_config": asdict(fusion_config)})
     print(f"Bot range fusion: {args.bot_fusion}")
-    startup_stage = StartupStage.LIDAR
-    print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
-    try:
-        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
-    except Exception as e:
-        raise RuntimeError(f"Failed to initialize LIDAR: {e}")
+    if args.no_lidar:
+        print("LiDAR disabled; using odometry/PCB localisation (movement requires a valid pose).")
+    else:
+        startup_stage = StartupStage.LIDAR
+        print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+        try:
+            lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize LIDAR: {e}")
 
-    print("LIDAR initialized successfully!")
-    print()
+        print("LIDAR initialized successfully!")
+        print()
 
-    print("Waiting for first scan data...")
-    while not lidar.is_scan_ready():
-        if enter_pressed():
-            print("Shutdown requested, exiting.")
-            raise KeyboardInterrupt
-        time.sleep(0.1)
+        print("Waiting for first scan data...")
+        while not lidar.is_scan_ready():
+            if enter_pressed():
+                print("Shutdown requested, exiting.")
+                raise KeyboardInterrupt
+            time.sleep(0.1)
 
     startup_stage = StartupStage.HARDWARE
     status.update(bot_mode.name, False, GameState.STARTING, "MOTORS / IMU")
@@ -415,16 +425,17 @@ try:
     if line_sensor_feed.error:
         print(line_sensor_feed.error)
 
-    startup_stage = StartupStage.LIDAR
-    status.update(bot_mode.name, False, GameState.STARTING, "FIRST POSE")
-    print("Waiting for first pose estimate...")
-    while not lidar.is_coordinates_ready():
-        if enter_pressed():
-            print("Shutdown requested, exiting.")
-            raise KeyboardInterrupt
-        feed_imu_yaw_prior(hardware_controller)
-        line_sensor_feed.update(lidar, hardware_controller)
-        time.sleep(0.1)
+    if not args.no_lidar:
+        startup_stage = StartupStage.LIDAR
+        status.update(bot_mode.name, False, GameState.STARTING, "FIRST POSE")
+        print("Waiting for first pose estimate...")
+        while not lidar.is_coordinates_ready():
+            if enter_pressed():
+                print("Shutdown requested, exiting.")
+                raise KeyboardInterrupt
+            feed_imu_yaw_prior(hardware_controller)
+            line_sensor_feed.update(lidar, hardware_controller)
+            time.sleep(0.1)
 
     if args.record_session is not None:
         recording_session = RecordingSession(
