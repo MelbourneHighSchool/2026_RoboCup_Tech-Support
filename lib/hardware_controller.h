@@ -129,6 +129,7 @@ private:
     int32_t drive_motor_current_limit_, dribbler_motor_current_limit_;
     bool dribbler_speed_mode_;
     int32_t dribbler_speed_;
+    std::chrono::steady_clock::time_point next_dribbler_attempt_{}; // Motor worker only.
     int32_t constant_speed_current_limit_, acceleration_current_limit_; // state_mutex_
     std::chrono::steady_clock::duration kick_pulse_, kick_cooldown_;
     mutable std::mutex state_mutex_;

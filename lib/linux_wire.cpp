@@ -1,15 +1,12 @@
 #include "linux_wire.h"
 
 #include <cerrno>
-#include <chrono>
-#include <cstdio>
 #include <fcntl.h>
 #include <linux/i2c-dev.h>
 #include <linux/i2c.h>
 #include <stdexcept>
 #include <sys/ioctl.h>
 #include <system_error>
-#include <thread>
 #include <unistd.h>
 
 void TwoWire::beginTransmission(uint8_t address) {
@@ -18,16 +15,7 @@ void TwoWire::beginTransmission(uint8_t address) {
 }
 void TwoWire::write(uint8_t value) { tx_.push_back(value); }
 void TwoWire::endTransmission() {
-    for (;;) {
-        try {
-            transfer(address_, false, tx_.data(), tx_.size());
-            return;
-        } catch (const std::exception& exc) {
-            if (address_ != retry_write_address_) throw;
-            std::fprintf(stderr, "Dribbler write failed: %s; retrying in 5 seconds\n", exc.what());
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-        }
-    }
+    transfer(address_, false, tx_.data(), tx_.size());
 }
 void TwoWire::requestFrom(uint8_t address, uint8_t count, uint8_t) {
     rx_.assign(count, 0);

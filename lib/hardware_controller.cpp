@@ -145,8 +145,6 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
     int init_address = -1;
     try {
         std::unique_lock<std::mutex> bus_lock(wire_->mutex);
-        if (calibration.size() == 5)
-            wire_->retryWritesFor(static_cast<uint8_t>(calibration[4].address));
         // Register all requested motors before any I/O so failure cleanup attempts all of them.
         for (const auto& cal : calibration) {
             motors_.emplace_back();
@@ -365,11 +363,11 @@ std::tuple<double, int, int> HardwareController::get_dribbler_qdr() {
     if (motors_.size() < 5)
         throw std::runtime_error("No dribbler motor is configured");
     try {
-        motor_operation(4, [&] { motors_[4].updateQuickDataReadout(); });
+        motors_[4].updateQuickDataReadout();
         return {motors_[4].getSpeedQDR() / RPM_TO_MOTOR_SPEED,
                 motors_[4].getERROR1QDR(), motors_[4].getERROR2QDR()};
     } catch (const std::exception& exc) {
-        fail(exc.what());
+        // Diagnostic read failures must not latch a drive fault.
         throw MotorCommunicationError(exc.what());
     }
 }
@@ -638,13 +636,17 @@ void HardwareController::drive_loop() noexcept {
                 for (size_t i = 0; i < rpms.size(); ++i)
                     motor_operation(i, [&] { motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED)); });
                 // Spin the dribbler, if configured
-                if (motors_.size() > 4)
-                    motor_operation(4, [&] {
+                if (motors_.size() > 4 && Clock::now() >= next_dribbler_attempt_) {
+                    try {
                         if (dribbler_speed_mode_)
                             motors_[4].setSpeed(command.dribbler * dribbler_speed_);
                         else
                             motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_);
-                    });
+                    } catch (const std::exception& exc) {
+                        std::fprintf(stderr, "Dribbler command failed: %s; retrying in 5 seconds\n", exc.what());
+                        next_dribbler_attempt_ = Clock::now() + std::chrono::seconds(5);
+                    }
+                }
                 odometry = read_odometry_locked();
             }
             motion_source_->publish(std::move(odometry));

@@ -577,6 +577,34 @@ void dribbler_speed_mode() {
     }
     controller.stop();
 }
+void dribbler_disconnect() {
+    for (bool speed_mode : {false, true}) {
+        auto state = std::make_shared<State>();
+        HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state),
+            0x4a, 10, -1, "", nullptr, 8.0, 1.0, 0.02, 0.5, nullptr, USE_PCB,
+            50, 50, 500, speed_mode, 750);
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_address = 29;
+            state->fail_opcode = speed_mode ? 0x12 : 0x11;
+        }
+        controller.move(0, 500, 0, 0, 1);
+        wait_ticks(controller, controller.loop_count() + 5);
+        assert(controller.health().fault_source.empty());
+        assert(controller.health().error.empty());
+        // A changed wheel command still reaches the wheels during dribbler backoff.
+        controller.move(0, 0, 0, 0, 0);
+        wait_ticks(controller, controller.loop_count() + 10);
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            for (int address = 25; address < 29; ++address) assert(state->speed[address] == 0);
+        }
+        const auto start = std::chrono::steady_clock::now();
+        // Shutdown reports an unreachable dribbler, but does not block or skip wheels.
+        throws([&] { controller.stop(); });
+        assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+    }
+}
 void failures() {
     auto state = std::make_shared<State>();
     state->bad_firmware_address = 26;
@@ -839,6 +867,7 @@ int main() {
     lifecycle(5);
     capped_acceleration();
     dribbler_speed_mode();
+    dribbler_disconnect();
     failures();
     kicker_control();
     kicker_failure();
