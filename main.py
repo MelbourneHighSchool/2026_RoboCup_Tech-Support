@@ -579,7 +579,7 @@ try:
             paused_yaw_reference_set = False
             next_paused_yaw_sample_time = time.monotonic()
         if not run:
-            hardware_controller.move(0, 0, 0, 0, dribbler=0)
+            hardware_controller.move(0, 0, 0, 0, dribbler=0, kick=False)
             controller_state = None
             now = time.monotonic()
             health = hardware_controller.health()
@@ -609,6 +609,11 @@ try:
         yaw = hardware_controller.get_yaw()
         feed_imu_yaw_prior(hardware_controller)
         line_sensor_feed.update(lidar, hardware_controller)
+
+        # Keep sensing/re-zeroing while paused, but never run a movement strategy
+        # (including returning to its default position) or enable the dribbler.
+        if not run:
+            continue
 
         if run:
             pose_snapshot = lidar.get_pose_snapshot()
