@@ -568,6 +568,7 @@ try:
             paused_yaw_reference_set = False
             next_paused_yaw_sample_time = time.monotonic()
         if not run:
+            hardware_controller.move(0, 0, 0, 0, dribbler=0)
             controller_state = None
             now = time.monotonic()
             health = hardware_controller.health()
@@ -846,14 +847,11 @@ try:
                         pi_temperature_c=temperature_c,
                     )
             try:
-                hardware_controller.move(direction, speed, rotation, 1.0, dribbler, kick=kick)
+                hardware_controller.move(direction, speed, rotation, 1.0, -dribbler, kick=kick)
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
             _strategy_loop_count += 1
-        else:
-            if hardware_controller is not None:
-                hardware_controller.move(0, 0, 0, 0, 0)
 
 except KeyboardInterrupt:
     pass
