@@ -187,14 +187,23 @@ def _scoring_path(ball_x, ball_y, angle_deg, target_x, mouth_x, mouth_sector):
     near_angle, far_angle, opposite_y = mouth_sector
     span = wrap_angle_deg(far_angle - near_angle)
     from_near = wrap_angle_deg(angle_deg - near_angle)
-    if abs(span) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
-        return None
-    if from_near * span <= 0:
-        return None
-    if abs(from_near) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
-        return None
-    if abs(from_near) > abs(span) + 1e-9:
-        return None
+    inside_goal = (
+        min(mouth_x, target_x) <= ball_x <= max(mouth_x, target_x)
+        and GOAL_SIDE_WALL_Y_MIN + BALL_RADIUS <= ball_y
+        <= GOAL_SIDE_WALL_Y_MAX - BALL_RADIUS
+    )
+    # Once the ball has crossed the mouth, its forward ray no longer needs
+    # to pass through the posts behind it. Still validate the back-wall hit,
+    # any side-wall rebound, post clearance and opponents below.
+    if not inside_goal:
+        if abs(span) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
+            return None
+        if from_near * span <= 0:
+            return None
+        if abs(from_near) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
+            return None
+        if abs(from_near) > abs(span) + 1e-9:
+            return None
     if not _clears_posts(ball_x, ball_y, angle_deg, mouth_x):
         return None
 

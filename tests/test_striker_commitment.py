@@ -71,6 +71,33 @@ def test_open_lane_can_still_kick():
     assert out[4]
 
 
+def test_captured_ball_inside_goal_can_kick_recorded_aligned_shot():
+    # nats_not_kicking: the mouth is behind the ball at this point.
+    out = striker.striker(
+        2080.473388671875, 871.7796020507812, 16.27904651892277,
+        2176.4641756354567, 899.8111702928956,
+        ball_captured=True,
+        state=striker.StrikerState(aim=19.258873398017904),
+        now=0,
+    )
+    assert out[4]
+    assert out[5] == -1
+
+
+@pytest.mark.parametrize("angle", [0, 16, 80, 180])
+def test_inside_goal_still_checks_opponents_and_forward_path(angle):
+    assert not striker.kick_direction_scores(
+        2176, 900, angle, striker.CYAN_GOAL_BACK_X,
+        striker.CYAN_GOAL_MOUTH_X, [(2190, 910)],
+    )
+
+
+def test_ball_beyond_back_wall_cannot_score_forward():
+    assert not striker.kick_direction_scores(
+        2220, 910, 0, striker.CYAN_GOAL_BACK_X, striker.CYAN_GOAL_MOUTH_X,
+    )
+
+
 def test_two_enemies_in_goal_box_do_not_block_direct_shot():
     enemies = [(1950, 910), (2050, 910)]
     aim, possible = striker.goal_shot_aim(
