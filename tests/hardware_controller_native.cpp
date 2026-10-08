@@ -22,6 +22,7 @@ struct State {
     int pcb_reads = 0, pcb_kicks = 0, pcb_attempts = 0;
     int fail_address = -1, fail_opcode = -1, bad_firmware_address = -1;
     bool fail_read_after_kick = false, fail_next_pcb_read = false;
+    bool fail_dribbler_read = false;
     std::atomic<bool> in_transfer{false};
     std::atomic<bool> block_motor{false}, motor_blocked{false};
 };
@@ -72,6 +73,8 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         if (reading) {
+            if (address == 29 && state_->fail_dribbler_read)
+                throw std::runtime_error("dribbler read unavailable");
             std::fill(data, data + size, 0);
             if (size == 4) data[0] = address == state_->bad_firmware_address ? 2 : 3;
             else {
@@ -598,6 +601,31 @@ void dribbler_disconnect() {
         {
             std::lock_guard<std::mutex> lock(state->mutex);
             for (int address = 25; address < 29; ++address) assert(state->speed[address] == 0);
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_dribbler_read = true;
+        }
+        throws([&] { controller.get_dribbler_qdr(); });
+        assert(controller.health().error.empty());
+        controller.move(0, 100, 0, 0, 1);
+        wait_ticks(controller, controller.loop_count() + 3);
+        if (speed_mode) {
+            // Reconnection resumes commands after the scheduled retry.
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->fail_address = -1;
+            }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+            bool recovered = false;
+            while (!recovered && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::lock_guard<std::mutex> lock(state->mutex);
+                recovered = state->speed[29] == static_cast<int32_t>(750 * RPM_TO_MOTOR_SPEED);
+            }
+            assert(recovered);
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->fail_address = 29;
         }
         const auto start = std::chrono::steady_clock::now();
         // Shutdown reports an unreachable dribbler, but does not block or skip wheels.
