@@ -36,6 +36,7 @@ class ToFLocalisation:
         self.distances = [None] * 8
         self.errors = {}
         self._last_update = time.monotonic()
+        self.last_scan_time = None
         try:
             self._native.start(pitch_x, pitch_y)
         except BaseException:
@@ -75,7 +76,8 @@ class ToFLocalisation:
                                  self.radius_mm * math.sin(angle)))
             except OSError as exc:
                 self.errors[address] = str(exc)
-        self._native.update(readings, self.min_range, self.max_range)
+        if self._native.update(readings, self.min_range, self.max_range):
+            self.last_scan_time = time.monotonic()
         return self._native.get_coordinates_info()
 
     def close(self):

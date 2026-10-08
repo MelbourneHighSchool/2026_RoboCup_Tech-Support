@@ -27,5 +27,6 @@ PYBIND11_MODULE(tof_native, m) {
         }
         py::gil_scoped_release release;
         loc_update_scan(scan.data(), scan.size(), min_range, max_range, 5);
+        return loc_get_deskew_status().accepted;
     }, py::arg("readings"), py::arg("min_range") = 40, py::arg("max_range") = 4000);
 }

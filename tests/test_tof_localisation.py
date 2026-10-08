@@ -4,6 +4,42 @@ import math
 import unittest
 
 from lib import tof_native
+from tests.tof_localisation import target_command
+
+
+class TargetMovementTests(unittest.TestCase):
+    def test_rightward_target_uses_native_heading_frame(self):
+        command, arrived = target_command(
+            (800, 1000), (800, 400, 90, 0.8, True), fresh=True,
+            max_speed=500, heading_offset=90,
+        )
+        self.assertEqual(command, (0, 500, 0, 1))
+        self.assertFalse(arrived)
+
+    def test_slows_near_target_and_stops_on_arrival(self):
+        command, arrived = target_command(
+            (950, 400), (800, 400, 0, 0.8, True), fresh=True,
+            max_speed=500, heading_offset=0,
+        )
+        self.assertEqual(command[1], 250)
+        self.assertFalse(arrived)
+        command, arrived = target_command(
+            (805, 400), (800, 400, 0, 0.8, True), fresh=True,
+            max_speed=500, heading_offset=0,
+        )
+        self.assertEqual(command[1], 0)
+        self.assertTrue(arrived)
+
+    def test_stale_or_invalid_pose_stops_without_claiming_arrival(self):
+        for fresh, valid in ((False, True), (True, False)):
+            with self.subTest(fresh=fresh, valid=valid):
+                command, arrived = target_command(
+                    (800, 400), (800, 400, 0, 0.8, valid), fresh=fresh,
+                    max_speed=500, heading_offset=0,
+                )
+                self.assertEqual(command[1], 0)
+                self.assertEqual(command[3], 0)
+                self.assertFalse(arrived)
 
 
 class SparseLocalisationTests(unittest.TestCase):
