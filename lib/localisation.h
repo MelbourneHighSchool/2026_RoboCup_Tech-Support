@@ -14,6 +14,7 @@ struct LocScanPoint {
     int quality;
     bool hit;           // false = explicit no-return / miss at this bearing
     double time_s;      // monotonic acquisition time; -1 for untimed synthetic data
+    float origin_forward_mm = 0, origin_right_mm = 0;
     LocScanPoint(float a=0, float d=0, int q=0, bool h=false, double t=-1)
         : angle_deg(a), distance_mm(d), quality(q), hit(h), time_s(t) {}
 };

@@ -95,8 +95,13 @@ static constexpr float INLIER_THRESH = 80.0f; // mm, if a lidar ray is more than
 static constexpr float CONF_ACQUIRE_THRESHOLD = 0.5f; // Confidence required to accept a new pose.
 static constexpr float CONF_TRACK_THRESHOLD = 0.35f; // If confidence drops below this, the pose is no longer considered valid.
 static constexpr int PARTICLE_COUNT = 1000;
+#ifdef SOCCER_TOF
+static constexpr int MIN_OBSERVATION_COUNT = 6;
+static constexpr int MIN_HIT_COUNT = 4;
+#else
 static constexpr int MIN_OBSERVATION_COUNT = 30; // A scan requires at least this many observations to be valid.
 static constexpr int MIN_HIT_COUNT = 8; // A pose requires at least this many lidar hits (not including misses) to be valid.
+#endif
 static constexpr int ANGLE_BIN_COUNT = 180;  // Only saves one lidar observeration every 2°.
 static constexpr float ANGLE_BIN_DEG = 360.0f / ANGLE_BIN_COUNT;
 static constexpr float TRANS_NOISE_MM = 8.0f; // How much translation noise to add to particles.
@@ -772,6 +777,8 @@ static std::vector<Observation> bin_observations(const LocScanPoint* points, int
         Observation o;
         o.angle_deg = b.point.angle_deg;
         o.time_s = b.point.time_s;
+        o.origin_x = b.point.origin_forward_mm;
+        o.origin_y = b.point.origin_right_mm;
         o.hit = b.point.hit;
         o.distance_mm = b.point.distance_mm;
         if (b.point.hit) {
@@ -794,8 +801,10 @@ static bool prepare_observations(std::vector<Observation>& obs, double scan_time
         if (mode != "off" && (!std::isfinite(o.time_s) || o.time_s <= 0 ||
             !g_motion.relative(scan_time, o.time_s, mode == "full", relative))) return false;
         const double c=std::cos(relative.yaw*motion::RAD), s=std::sin(relative.yaw*motion::RAD);
-        o.origin_x = relative.x + c*g_mount_forward + s*g_mount_left;
-        o.origin_y = relative.y + s*g_mount_forward - c*g_mount_left;
+        const double forward = g_mount_forward + o.origin_x;
+        const double left = g_mount_left - o.origin_y;
+        o.origin_x = relative.x + c*forward + s*left;
+        o.origin_y = relative.y + s*forward - c*left;
         o.angle_deg += relative.yaw + g_mount_yaw;
         if (status) {
             status->max_translation_mm = std::max(status->max_translation_mm,std::hypot(relative.x,relative.y));

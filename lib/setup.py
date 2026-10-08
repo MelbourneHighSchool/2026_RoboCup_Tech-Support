@@ -7,6 +7,7 @@ Usage (from project root):
 
 import json
 import os
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -16,6 +17,9 @@ from setuptools.command.build_ext import build_ext
 
 lib_dir = Path(__file__).resolve().parent
 project_root = lib_dir.parent
+tof_only = "--tof-only" in sys.argv or os.environ.get("SOCCER_TOF_ONLY") == "1"
+if "--tof-only" in sys.argv:
+    sys.argv.remove("--tof-only")
 pcb_layout_header = str(project_root / "STM32/Core/Inc/pcb_sensor_layout.h")
 
 # Get pybind11 include path
@@ -42,6 +46,18 @@ lidar_module = Extension(
     ],
     library_dirs=[sdk_lib],
     libraries=['sl_lidar_sdk', 'pthread', 'rt'],
+    extra_compile_args=['-std=c++11', '-O2', '-fPIC'],
+    language='c++',
+)
+
+
+tof_module = Extension(
+    'lib.tof_native',
+    sources=[str(lib_dir / 'tof_module.cpp'), str(lib_dir / 'tof_localisation_engine.cpp')],
+    depends=[pcb_layout_header, str(lib_dir / 'localisation.h'),
+             str(lib_dir / 'localisation.cpp')],
+    include_dirs=[pybind11_include, str(lib_dir)],
+    libraries=['pthread'],
     extra_compile_args=['-std=c++11', '-O2', '-fPIC'],
     language='c++',
 )
@@ -114,7 +130,8 @@ setup(
     name='soccer-hardware',
     version='1.0',
     description='Soccer LIDAR and motor hardware modules',
-    ext_modules=([hardware_module] if os.environ.get("SOCCER_HARDWARE_ONLY") == "1"
-                 else [lidar_module, hardware_module]),
+    ext_modules=([tof_module] if tof_only
+                 else [hardware_module] if os.environ.get("SOCCER_HARDWARE_ONLY") == "1"
+                 else [lidar_module, hardware_module, tof_module]),
     cmdclass={'build_ext': BuildExtWithCompileCommands},
 )
